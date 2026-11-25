@@ -1,0 +1,21 @@
+---
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyCluster
+metadata:
+  name: benchmark-cluster
+spec:
+  shards: 3
+  replicasPerShard: 0
+  acl:
+    users:
+      - name: default
+        permissions: "+@all ~* &*"
+        password:
+          type: Any
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"

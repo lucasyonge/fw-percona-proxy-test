@@ -3,7 +3,7 @@
 This page describes every script in the repository: what it tests, how to run it, and how it reports pass/fail. For setup and an overview, see the [README](README.md).
 
 | Script | Type | Summary |
-|---|---|---|
+| --- | --- | --- |
 | [`envoy_commands_sanity.sh`](#envoy_commands_sanitysh) | Functional | Positive checks for set, sorted-set, list/blocking, script, cluster, string, stream, hash and misc commands, run from a k8s pod via the proxy |
 | [`envoy_commands_sanity_valkey8.sh`](#envoy_commands_sanity_valkey8sh) | Functional | Valkey 8 variant of the sanity suite |
 | [`pubsub_commands.sh`](#pubsub_commandssh) / [`_valkey8`](#pubsub_commands_valkey8sh) | Functional | SUBSCRIBE / PSUBSCRIBE / PUBLISH / PUBSUB introspection through the proxy |
@@ -11,6 +11,7 @@ This page describes every script in the repository: what it tests, how to run it
 | [`negative_testing_envoy_commands.sh`](#negative_testing_envoy_commandssh) / [`_valkey8`](#negative_testing_envoy_commands_valkey8sh) | Negative | Unsupported/invalid commands and auth errors must return the expected error |
 | [`valgrind-memory-leak-scripts/*`](#valgrind-memory-leak-scripts) | Memory | Workloads against Envoy running under Valgrind |
 | [`address-sanitiser-scripts/*`](#address-sanitiser-scripts) | Memory | Workloads against an ASan-instrumented Envoy build |
+| [`k8s/deploy-valkey-cluster.sh`](#deploy-a-valkey-cluster-on-kubernetes) | Setup | Installs the Valkey Operator and deploys the benchmark cluster |
 | [`endurance-test-scripts/*`](#endurance-test-scripts) | Endurance | Long-running benchmark, pub/sub churn, streams and periodic client kills |
 
 ## envoy_commands_sanity/ — command sanity suites
@@ -69,6 +70,7 @@ This page describes every script in the repository: what it tests, how to run it
     - An interactive terminal: the checks rely on the TTY-formatted `redis-cli` output (see Notes).
     - The proxy reachable from that pod, in front of a Redis Cluster.
   - Example:
+
     ```bash
     cd envoy_commands_sanity
     # fill in test_params_envoy.cfg first
@@ -129,6 +131,7 @@ This page describes every script in the repository: what it tests, how to run it
   - Everything else is the same as the base script: connection, config file, the other test cases, the disabled blocks and the output format.
 
 - **How it runs**: Same as the base script: same `./test_params_envoy.cfg`, same prerequisites (including the TTY). The backend must be a Valkey version that supports the commands and options used. The file is not marked executable, so run it with bash:
+
   ```bash
   bash envoy_commands_sanity_valkey8.sh 2>&1 | tee sanity_valkey8.log
   ```
@@ -149,7 +152,7 @@ This page describes every script in the repository: what it tests, how to run it
 - **Contents** (all required; there are no defaults in the scripts, and only `POD_NAME` is explicitly checked):
 
   | Variable | Meaning |
-  |---|---|
+  | --- | --- |
   | `TENANT_NAME` | Kubernetes namespace that holds the test pod and the proxy Service |
   | `POD_NAME` | Pod used to run `redis-cli` against the proxy (`kubectl exec`) |
   | `PROXY_SERVICE` | Kubernetes Service in front of the Envoy proxy; its external-dns hostname annotation becomes `PROXY_HOST` |
@@ -167,7 +170,7 @@ This page describes every script in the repository: what it tests, how to run it
 All six scripts are standalone Bash scripts that run `redis-cli` from the local machine straight against the proxy endpoint. They do **not** read `test_params_envoy.cfg` and do not use `kubectl`. They all share the same connection settings:
 
 | Env var | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `REDIS_HOST` | none (required) | Proxy host. The script aborts if it is unset or empty. |
 | `REDIS_PORT` | `6379` | Proxy port. |
 | `REDIS_PASSWORD` | none (required) | Password passed to `redis-cli -a`. The script aborts if it is unset or empty. |
@@ -181,24 +184,29 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 **Purpose**: A functional check of pub/sub through the proxy. It runs background subscribers, publishes messages and checks the `PUBSUB` introspection counters.
 
 **What it tests** (channel `test_channel_100`):
+
 - Introspection: `PUBSUB NUMSUB` (expects 0, 0 again after the first subscriber is killed, then 1 while a subscriber is active), `PUBSUB NUMPAT` (expects 0, 0, then 1 while a pattern subscriber is active), `PUBSUB CHANNELS` (the channel must be listed while a subscriber is active).
 - Publish: `PUBLISH` with no subscribers (expects `0`) and with one subscriber (expects `1`).
 - Subscribe: `SUBSCRIBE` (subscribe confirmation `subscribe / <channel> / 1`, then receipt of `message / <channel> / Hello`), `PSUBSCRIBE test_channel_100*` (confirmation `psubscribe / <pattern> / 1`).
 - Unsubscribe: `UNSUBSCRIBE` outside subscribe mode (expects zero output lines matching the channel, `unsubscribe` or `0`). A second check is labelled "PUNSUBSCRIBE".
 
 **How it runs**:
+
 - Prerequisites: `bash`, `redis-cli`, and standard `ps`/`awk`/`sed`/`grep`/`egrep`/`xargs`/`tail`/`tr`. Subscribers run as background `redis-cli` processes on the same host. Each subscriber step waits 5 s (`sleep 5`) and then stops the subscribers with `kill -9` (`kill_clients`, also run once at startup).
 - Writes subscriber output to `./subscriber_output.log` in the current directory and deletes it at the end.
 - Example:
+
   ```bash
   REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PASSWORD=secret ./pubsub_commands.sh
   ```
 
 **Pass/fail & output**:
+
 - Each check prints a timestamped `PASSED : ✅ ...` or `FAILED : ❌ ...` line with the expected and actual values. The numsub/numpat checks print `INFO : ... validation succeeded` or `FAILED : ... validation failed`.
 - There are no counters, no summary and no failure exit code: the script always ends normally. Search the output for `FAILED` to find problems.
 
 **Notes / caveats**:
+
 - `kill_clients` kills **every** local process whose `ps -aef` line contains "subscribe" (case-insensitive) and `$REDIS_HOST`. It is not limited to processes this script started.
 - The check labelled "PUNSUBSCRIBE" actually sends `unsubscribe test_channel_100`. `PUNSUBSCRIBE` is never sent.
 - All three log-based checks (both SUBSCRIBE checks and the PSUBSCRIBE check) read the log only *after* `kill -9`. Subscriber output goes through a pipe (`redis-cli | grep -v option > file`), so it may not have been flushed yet when `tail` runs, which can make these checks flaky. The `_valkey8` variant addresses this.
@@ -211,6 +219,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 **Purpose**: The same pub/sub flow, adapted for Valkey 8 backends, plus several Valkey 8 `CLIENT` command checks.
 
 **Differences from `pubsub_commands.sh`**:
+
 - The channel is `{channel}test_pubsub` (hash-tagged) instead of `test_channel_100`.
 - `redis-cli` is called with `--no-auth-warning`. stderr is merged into stdout (`2>&1`) and `Warning:` lines are filtered out, so error replies now appear in the results.
 - Background subscribers run through `stdbuf -oL -eL redis-cli ...` (line-buffered output, not piped through `grep`). Each subscriber log is deleted before the step and read **before** the subscribers are killed (first 3 non-empty lines for subscribe/psubscribe confirmations, last 3 non-empty lines for the message). There is an extra `sleep 1` after `PUBLISH`.
@@ -224,6 +233,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 - Example: `REDIS_HOST=... REDIS_PASSWORD=... bash pubsub_commands_valkey8.sh`. The file is not marked executable.
 
 **Notes / caveats**:
+
 - Requires `stdbuf` (GNU coreutils). It is not available by default on macOS, where coreutils provides it as `gstdbuf`. Without it, the subscriber logs only contain a "command not found" error and the subscribe checks fail.
 - The Valkey 8 checks decide pass/fail from `$?` of `result=$(redis_cmd ...)`. That is the exit status of the trailing `grep -v "Warning:"`, so any non-empty reply passes, **including error replies**; only an empty reply fails.
 - The "PUNSUBSCRIBE" step in the main flow still sends `unsubscribe`, as in the base script. The same `kill_clients` caveat also applies.
@@ -235,6 +245,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 **Purpose**: Wraps each of 274 commands in its own `MULTI` / `<command>` / `EXEC` block sent through the proxy. It compares each `EXEC` result with a hard-coded expected value to check how the proxy handles transactions.
 
 **What it tests** (one transaction per entry, in a fixed order; the cases build on each other's state):
+
 - Strings: SET, GET, APPEND, STRLEN, SETEX, PSETEX, TTL, PTTL, SETNX, MSETNX (a cross-slot case that expects `CROSSSLOT` + `EXECABORT`, and a hash-tagged case), MSET, MGET, SETRANGE, GETRANGE, INCR, INCRBY, INCRBYFLOAT, DECR, DECRBY, SETBIT, GETBIT, BITCOUNT, BITPOS, GETSET.
 - Lists: LPUSH, RPUSH, LPUSHX, RPUSHX, LLEN, LRANGE, LPOP, RPOP, LINDEX, LSET, LREM, LTRIM, LINSERT, RPOPLPUSH, BLPOP, BRPOP (timeouts 1 and 0), BRPOPLPUSH (timeouts 0 and 1).
 - Sets: SADD, SCARD, SMEMBERS, SISMEMBER, SREM, SRANDMEMBER, SMOVE, SDIFF, SDIFFSTORE, SINTER, SINTERSTORE, SUNION, SUNIONSTORE, SPOP.
@@ -255,21 +266,25 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 - COPY: `COPY {key}1 {key}2` without `REPLACE` (expects `0`) and with `REPLACE` (expects `1`), verified with MGET.
 
 **How it runs**:
+
 - Prerequisites: `bash`, `redis-cli`, `awk`/`sed`/`egrep`/`cut`/`tr`. No cluster mode (`-c`) is used: everything goes through the proxy.
 - At startup the script runs `FLUSHALL` and `SCRIPT LOAD` of a small SET/GET Lua script. **It wipes the target database.**
 - Each case is fed to `redis-cli` on stdin as a heredoc (`MULTI`, the command, `EXEC`). Multi-line replies (after dropping lines containing `QUEUED`/`OK`) are flattened into one string with literal `\n` separators; single-line replies drop the first two lines (the `MULTI` `OK` and `QUEUED`). Per-command parsing rules exist for XRANGE/XREAD/XREVRANGE/XINFO, ZRANGE/HGETALL/MGET/GEOPOS, SMEMBERS/SRANDMEMBER/SPOP (each line cut to 6 chars so member order does not matter), TIME, XREADGROUP, XADD, PING, TTL and PTTL.
 - Example:
+
   ```bash
   REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PASSWORD=secret ./transaction_commands.sh
   ```
 
 **Pass/fail & output**:
+
 - For each case it prints `Executing: <cmd>`, the raw `=======RESULT`, then `PASSED : ✅`, `FAILED : ❌` (with expected and actual values) or `FATAL : ❌` (if the output contains `WRONGTYPE`, `NOSCRIPT`, `NOTBUF` or `SYNTAXERR`). FATAL also counts as an error.
 - TTL/PTTL pass when the value is ≤ 10 or ≤ 10000 respectively.
 - At the end it prints a summary with the total number of commands and the number of commands with errors.
 - **Exit code**: `0` if `error_count ≤ 11`, followed by a final `FLUSHALL`. Otherwise it prints `ERROR : n/total commands failed ...` and exits with `1` (no final `FLUSHALL`, so test data is left behind).
 
 **Notes / caveats**:
+
 - The `commands` and `expected_results` arrays are matched **by position**. Both have 274 entries, so adding or removing an entry in only one array shifts every later expectation.
 - In `execute_redis_command`, the line `2>/dev/null | grep -v option` comes *after* the heredoc terminator. It therefore runs as a separate, empty command, and the intended stderr suppression and filtering never apply to `redis-cli` (the `-a` password warning is printed to the terminal for every case).
 - The FATAL check runs before the comparison, so the unknown-SHA `EVALSHA` case (whose expected value itself contains `NOSCRIPT`) always counts as an error.
@@ -285,6 +300,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 **Purpose**: The same MULTI/EXEC sweep, with expectations updated for Valkey 8 backends, plus a few standalone Valkey 8 transaction checks.
 
 **Differences from `transaction_commands.sh`**:
+
 - Before the main loop (after the startup FLUSHALL/SCRIPT LOAD), three extra checks run. They print PASSED/FAILED/INFO lines but **do not count toward `error_count` or the exit code**:
   - Nested `MULTI` must fail with `MULTI calls can not be nested`. `WATCH` inside `MULTI` must fail with `ERR Command not allowed inside a transaction`.
   - `DEL {trans}version`, then `SET {trans}version v1`, `SET … v2 IFEQ v1` and `GET` inside one transaction. The result must contain `v2`.
@@ -299,6 +315,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 - The pass threshold (`error_count ≤ 11`), the parsing and the FLUSHALL behaviour are unchanged. The file is not marked executable, so run it with `bash transaction_commands_valkey8.sh`.
 
 **Notes / caveats**:
+
 - The heredoc stderr/filter issue, the NOSCRIPT-always-FATAL case, the double XADD validation and the TIME check from the base script are all inherited. The extra checks use the same heredoc pattern; in the SET IFEQ check, the trailing `| tail -3` is on the same disconnected line, so it has no effect either.
 - The nested-MULTI and WATCH-inside-MULTI checks use the non-hash-tagged key `key1`; if the proxy queues the `SET`, it is actually written.
 
@@ -309,6 +326,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 **Purpose**: Sends malformed or wrong-type commands through the proxy and checks that the proxy or the backend returns the expected errors. It also checks that commands sent without arguments are rejected.
 
 **What it tests**:
+
 - **Authentication** (results are only printed, not counted): `PING` without a password (expects `NOAUTH`), with a wrong password (expects `invalid password`), and with the correct password (expects `PONG`).
 - **Test case 01, wrong type / bad arguments** (counted; the setup steps such as `flushall`, `LPUSH`, `SET` and `del` are counted as tests too). The script creates a list `{negative_list}1` and a string `{negative_string}1`, then sends:
   - Strings: APPEND, BITCOUNT, BITOP and STRLEN on a list (expect `WRONGTYPE`); DECR and INCR on a non-integer; SETBIT and GETBIT with offset -1; SETRANGE with a negative offset; GET on a missing key; GETRANGE with an inverted range.
@@ -328,21 +346,26 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 - **Test case 02, no arguments**: 176 commands are each sent with no arguments, and each reply must contain `invalid request` (Envoy's response to bad arity). The list covers string, hash, list, set, sorted-set, HyperLogLog, connection (AUTH, ECHO, PING, SELECT), server (BGREWRITEAOF, BGSAVE, DBSIZE, FLUSHALL, FLUSHDB, INFO, LASTSAVE, SAVE, TIME), scripting (EVAL, EVALSHA), geo, stream and generic key commands (DEL … SCAN, including MIGRATE, MOVE, OBJECT, RESTORE, SORT and WAIT).
 
 **How it runs**:
+
 - Prerequisites: `bash` and `redis-cli`.
 - The script runs `FLUSHALL SYNC` at the start and at the end (and `flushall` again as the first counted case). **It wipes the target database.**
 - Before every no-argument command it checks `PING`, retrying every 5 s for as long as the proxy is unreachable (there is no timeout). There is a `sleep 5` between case 01 and case 02.
 - Example:
+
   ```bash
   REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PASSWORD=secret \
   PROXY_HOST=127.0.0.1 PROXY_PORT=6379 ./negative_testing_envoy_commands.sh
   ```
+
   `PROXY_HOST` and `PROXY_PORT` are needed for the authentication tests; see the caveats.
 
 **Pass/fail & output**:
+
 - A case passes when the reply *contains* the expected substring. Case 01 prints `PASS: <name>` or `FAIL: <name> - Expected '...', but got '...'`, followed by a summary of total, passed and failed tests. Case 02 prints `PASSED : ✅` or `FAILED : ⚠️` per command, then an overall PASSED/FAILED line.
 - **Exit code**: `1` if case 01 has **more than 5** failures; in that case case 02 never runs. Also `1` if case 02 has **more than 6** failures. Otherwise the exit code is that of the final `FLUSHALL SYNC ... | grep -wq OK`, i.e. `0` only if that final flush replies `OK`.
 
 **Notes / caveats**:
+
 - The authentication tests use `$PROXY_HOST` and `$PROXY_PORT`, which this script never defines. Export them yourself, or these three checks run against an empty host and port.
 - Cases whose expected value is `""` (GET on a missing key, GETRANGE with an inverted range, DUMP on a missing key) always pass, because an empty substring matches any reply.
 - Commands are passed unquoted (`$command`), so embedded quotes reach the server literally and `\n` is not a newline. As a result:
@@ -359,6 +382,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 **Purpose**: The same negative suite with expectations relaxed or updated for Valkey 8 backends, plus extra SCAN, BITCOUNT/BITPOS and transaction checks.
 
 **Differences from `negative_testing_envoy_commands.sh`**:
+
 - The authentication tests use `REDIS_HOST`/`REDIS_PORT`, which fixes the undefined `PROXY_*` variables. A wrong password also passes if the reply contains `NOAUTH`.
 - Pub/sub: `PUBLISH \"\" {negative_list}1` now expects `NOPERM`, which assumes an ACL that blocks pub/sub. `PUBSUB INVALID_SUBCOMMAND` expects `ERR unknown subcommand`.
 - Transactions: the broken "WATCH inside MULTI" one-liner is replaced by two real heredoc transactions that are counted. Nested `MULTI` expects `MULTI calls can not be nested`; `WATCH` inside `MULTI` expects `ERR Command not allowed inside a transaction`.
@@ -373,6 +397,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 - Thresholds (≤ 5 and ≤ 6 failures), exit codes and the FLUSHALL behaviour are unchanged. The file is not marked executable, so run it with `bash negative_testing_envoy_commands_valkey8.sh`.
 
 **Notes / caveats**:
+
 - The `NOPERM` expectation for PUBLISH only holds on a deployment whose ACL denies pub/sub. Because of the unquoted expansion, the channel sent is literally `""`; without such an ACL the reply is an integer and the test fails.
 - The case 02 pattern `ERR` accepts almost any error reply, so this case is much weaker than in the base script.
 - `SELECT 99` still expects the cluster-mode error.
@@ -399,6 +424,7 @@ All three scripts check the proxy for memory leaks the same way. For each test g
 **Purpose**: Runs a wide range of mostly non-transactional Redis commands through the proxy, one group at a time. Each of its 69 groups (66 unique names) gets a fresh valgrind-wrapped Envoy, and the script records the valgrind leak summary for each group.
 
 **What it tests** (each command is sent once, with `redis-cli -p 1999 <command>`):
+
 - **Streams**: XADD (MAXLEN ~, NOMKSTREAM, MINID ~, LIMIT), XRANGE (COUNT), XREVRANGE (COUNT), XLEN, XDEL (single and multiple IDs), XTRIM (MAXLEN, MAXLEN ~, MINID, MINID ~ LIMIT), XGROUP (CREATE, CREATECONSUMER, SETID, DESTROY, DELCONSUMER, CREATE ... MKSTREAM, SETID ... ENTRIESREAD), XREADGROUP (COUNT, BLOCK 5000, NOACK, multi-stream, explicit ID), XPENDING (summary, range, per-consumer, IDLE), XCLAIM (JUSTID, FORCE, IDLE, TIME, RETRYCOUNT), XAUTOCLAIM (COUNT, JUSTID), XINFO (STREAM, STREAM FULL, GROUPS, CONSUMERS)
 - **Sets**: SADD, SMEMBERS, SREM, SMISMEMBER, SUNION, SDIFF, SINTER, SUNIONSTORE, SDIFFSTORE, SINTERSTORE
 - **Sorted sets**: ZUNIONSTORE / ZINTERSTORE (WEIGHTS, AGGREGATE MIN/MAX), ZRANGESTORE (BYSCORE, REV, LIMIT), ZUNION (WEIGHTS, AGGREGATE MAX), ZINTER (WITHSCORES, WEIGHTS, AGGREGATE), ZDIFF (WITHSCORES), ZDIFFSTORE, ZMSCORE, ZRANDMEMBER (count, negative count, WITHSCORES)
@@ -413,6 +439,7 @@ All three scripts check the proxy for memory leaks the same way. For each test g
 - **Server / connection / admin**: FLUSHALL (sync and ASYNC), SLOWLOG (GET, GET 10, LEN, RESET), CONFIG (GET \*, GET maxmemory, SET maxmemory 2GB, RESETSTAT), CLIENT (LIST, GETNAME, SETNAME, KILL, PAUSE 5000), INFO (all, memory), CLUSTER (INFO, NODES, SLOTS, KEYSLOT), SELECT 0/1, HELLO (2, 3 AUTH, 3 SETNAME), UNWATCH
 
 **How it runs**:
+
 - Connects with `redis-cli -p 1999` (default host 127.0.0.1, no `-c` cluster mode). Commands go through a shell (`shell=True`), so shell quoting, globbing and redirection apply (see caveats).
 - For each group it runs:
   `valgrind --leak-check=full --show-leak-kinds=all --log-file=envoy_valgrind_<group>_xmem_read.log ./bazel-bin/source/exe/envoy-static -c envoy.yaml --log-level debug`
@@ -422,12 +449,14 @@ All three scripts check the proxy for memory leaks the same way. For each test g
 - Example: `cd <envoy-src-root> && sudo python3 /path/to/non_blocking_commands.py` (it must run as root; see caveats).
 
 **Pass/fail & output**:
+
 - It gives no pass/fail verdict, and the exit code does not reflect leaks.
 - `memory_leak_report.txt` lists, for each group, every command with its stdout (or `Success` if stdout was empty) or, if anything was written to stderr, that stderr as the error.
 - It also includes the group's leak summary: the `LEAK SUMMARY:` line plus the next 3 lines (definitely, indirectly and possibly lost), taken from the last 15 lines of the valgrind log. If the summary isn't found there, it records `LEAK SUMMARY not found`. That is also what you get when valgrind finds no leaks at all, because valgrind then prints no `LEAK SUMMARY`.
 - You have to read the report yourself to judge whether there are leaks.
 
 **Notes / caveats**:
+
 - **You must run it as root.** The code finds the Envoy PID with the regex `\s*root\s+(\d+)\s+.*valgrind.*envoy-static` against `ps -ef | grep valgrind | grep envoy-static` output. If you run it as any other user, it waits the full 600 s and then reports a timeout.
 - **The "Envoy started" check can pass too early.** When run as root, the regex can also match the script's own `sh -c "ps -ef | grep valgrind | grep envoy-static"` helper process, because that line contains both words. The `PING` wait is what really waits for startup.
 - **Shell globbing and redirection change some commands.** Commands are not quoted for the shell:
@@ -453,6 +482,7 @@ All three scripts check the proxy for memory leaks the same way. For each test g
 **Purpose**: Bash script that checks for leaks when the proxy handles Pub/Sub and blocking stream reads (plus a few basic commands). It runs four groups, each against a fresh valgrind-wrapped Envoy.
 
 **What it tests**:
+
 - **pubsub**:
   - Starts two background subscribers, `PSUBSCRIBE test_*` and `SUBSCRIBE test_channel`, each killed by `timeout 5s`.
   - Then sends `PUBSUB CHANNELS`, 5 × `PUBLISH test_channel "Message N"`, `PUBSUB NUMSUB test_channel`, `PUBSUB NUMPAT`, `PUBSUB CHANNELS`, `PUNSUBSCRIBE test_*`, `UNSUBSCRIBE test_channel`, and `PUBSUB CHANNELS` again.
@@ -463,10 +493,11 @@ All three scripts check the proxy for memory leaks the same way. For each test g
 - **other**: SET, GET, HSET, HGET.
 
 **How it runs**:
+
 - Settings are variables at the top of the script and can only be changed by editing it:
 
   | Variable | Default |
-  |---|---|
+  | --- | --- |
   | `ENVOY_BINARY` | `./bazel-bin/source/exe/envoy-static` |
   | `ENVOY_CONFIG` | `envoy.yaml` |
   | `REDIS_PORT` | `1999` |
@@ -482,11 +513,13 @@ All three scripts check the proxy for memory leaks the same way. For each test g
 - Example: `cd <envoy-src-root> && bash /path/to/blocking_commands.sh`. The file is not executable, so you have to call it with `bash`.
 
 **Pass/fail & output**:
+
 - It gives no pass/fail verdict. Command output and progress are printed to stdout.
 - After each group it appends `Running test group: <group>` and the valgrind block from `LEAK SUMMARY:` through `suppressed:` to `memory_leak_report_blocking_commands.txt`. If valgrind found no leaks at all, it prints no `LEAK SUMMARY`, so only the header line is appended.
 - The exit status is that of the final `run_test_group "other"` call. That is normally 0 (from the last `echo`), so it does not reflect leaks. A `return 1` from the earlier `run_test_group` calls is never checked.
 
 **Notes / caveats**:
+
 - **The report file only grows.** It is appended to and never truncated, so results from earlier runs pile up.
 - **`REDIS_CLUSTER_NODES` is unused.** It is defined but never referenced. `LOG_FILE` is also overwritten for each group.
 - **Unquoted `*` in XADD.** In `XADD mystream * ...` and the other XADD calls, the shell expands `*` to the file names in the current directory, which in an Envoy source tree is a long list. Quote it (`'*'`) if you want auto-generated IDs.
@@ -504,6 +537,7 @@ All three scripts check the proxy for memory leaks the same way. For each test g
 **Purpose**: Checks the proxy for leaks while it handles `MULTI`/`EXEC` transactions. Each of 13 command groups is wrapped in one transaction and sent 100 times against a fresh valgrind-wrapped Envoy. At the end the script gives a simple pass/fail verdict.
 
 **What it tests** (each group is sent as `MULTI` + commands + `EXEC`; most multi-key groups use hash tags such as `{key}`, `{mylist}` or `{myset}` so the keys share a slot):
+
 - **Strings**: SET, GET, APPEND, STRLEN, TTL, PTTL, SETRANGE, GETRANGE, INCR, INCRBY, INCRBYFLOAT, DECR, DECRBY, SETBIT, GETBIT, BITCOUNT, BITPOS
 - **Lists**: LPUSH, RPUSH, LPUSHX, RPUSHX, LLEN, LRANGE, LPOP, RPOP, LINDEX, LREM, LTRIM, SORT ALPHA, RPOPLPUSH
 - **Sets**: SADD, SCARD, SMEMBERS, SISMEMBER, SREM, SRANDMEMBER, SPOP, SMOVE, SDIFF, SDIFFSTORE, SINTER, SINTERSTORE, SUNION, SUNIONSTORE
@@ -525,11 +559,13 @@ All three scripts check the proxy for memory leaks the same way. For each test g
   - XREADGROUP with COUNT 10, BLOCK 10000/0 and IDs `0` and `>`.
 
 **How it runs**:
+
 - Each transaction is sent as `echo '<MULTI\n...\nEXEC>' | redis-cli -p 1999` (no `-c`), with a 15 s timeout per transaction.
 - `iterations = 100` transactions per group. The Envoy command line and startup/shutdown handling match `non_blocking_commands.py`. The valgrind log is `envoy_valgrind_<group>_xmem_read.log`, and Envoy's output goes to `build_output.log`, which is overwritten for each group.
 - Example: `cd <envoy-src-root> && sudo python3 /path/to/mem_leak_transaction.py`. There is no shebang, so always call it with `python3`.
 
 **Pass/fail & output**:
+
 - `memory_leak_report_for_transaction.txt` contains, for each group and iteration:
   - the commands with their output lines;
   - a `Transaction Result:` line (the last output line);
@@ -543,6 +579,7 @@ All three scripts check the proxy for memory leaks the same way. For each test g
 - It also prints the full command and raw output of every transaction (`Debug - ...`), so stdout gets very long.
 
 **Notes / caveats**:
+
 - **You must run it as root.** It uses the same `ps -ef` regex for `root` as `non_blocking_commands.py`, so it times out as any other user. The same early-match issue with its own helper shell applies.
 - **Fragile shell quoting.** Many commands contain single quotes (`'Hello'`, `' World'`, `'Palermo'`), which break out of the `echo '...'` wrapper. The shell strips those quotes, so values are effectively sent unquoted, and spaces inside them can be lost (for example, `' World'` becomes `World`). It still runs, but not exactly as written.
 - **Per-command labels are approximate.** Output lines are matched to commands by line number. `EXEC` returns multi-line output, so the labels don't line up with the real replies.
@@ -584,15 +621,17 @@ These scripts start a locally built `envoy-static` binary, which is expected to 
     - An `envoy.yaml` in the current directory with a `redis_proxy` listener on port 1999 pointing at your Redis cluster.
     - Envoy must show up in `ps -ef` with the user name `root` (see Notes).
   - Example:
+
     ```bash
     cd /path/to/envoy-source        # contains bazel-bin/ and your envoy.yaml
     python3 /path/to/address-sanitiser-scripts/non_blocking_commands.py
     ```
+
 - **Pass/fail & output**:
   - **Startup:** waits up to 600 s for an `envoy-static` process, then up to 600 s for `PONG`. If either times out, it prints `Error: Timed out ...` and then `Failed to start Envoy or connect to Redis`, and exits with code 1.
   - **Each command:** the full health check runs first, so a dead proxy can take up to 600 s + 600 s to be noticed. Then the command runs.
   - **What counts as a failure:** a failed health check, or anything at all written to redis-cli's **stderr**. On the first failure the script prints the report so far, ending with the failing entry, and exits with code 1.
-  - **Report:** a single line with one `<group> - Success` or `<group> - Failed` entry per command (not per group). Entries are joined by a literal `\ ` (backslash and space).
+  - **Report:** a single line with one `<group> - Success` or `<group> - Failed` entry per command (not per group). Entries are joined by a literal `\` (backslash and space).
   - **Success:** the report line ends with `Test completed` and the script exits with code 0.
   - **Console noise:** every health check also prints `Debug - PS output: ...` lines.
   - ASan findings go to `envoy_logs.txt`, and you must check them by hand.
@@ -654,10 +693,12 @@ These scripts start a locally built `envoy-static` binary, which is expected to 
     - `redis-cli`, `pgrep`, `kill`, `date` and `timeout`. `timeout` is from GNU coreutils; on macOS, install coreutils and make `timeout` available on `PATH`.
     - The Envoy binary and an `envoy.yaml` with a `redis_proxy` listener on port 1999, both relative to the current directory.
   - Example:
+
     ```bash
     cd /path/to/envoy-source        # contains bazel-bin/ and your envoy.yaml
     bash /path/to/address-sanitiser-scripts/blocking_commands.sh
     ```
+
 - **Pass/fail & output**:
   - **Startup:** waits up to 600 s for an `envoy-static` process (via `pgrep -f`), then up to 600 s for `PONG`.
     - If either check fails, it prints `Error: Envoy failed to start` or `Error: Redis did not respond in time` and kills Envoy.
@@ -690,220 +731,94 @@ These scripts start a locally built `envoy-static` binary, which is expected to 
 
 ---
 
+## Deploy a Valkey Cluster on Kubernetes
+
+Run the deployment from the repository root with Helm and `kubectl` installed. Set your current Kubernetes context and namespace to the test environment first.
+
+```bash
+(cd k8s && ./deploy-valkey-cluster.sh)
+kubectl get pods -n valkey-operator-system
+kubectl get valkeycluster benchmark-cluster
+kubectl get valkeynodes -o wide
+```
+
+The script installs the Valkey Operator in `valkey-operator-system` and applies the `benchmark-cluster` resource in your current namespace. Run it from `k8s/` because it uses a relative path to the manifest. The manifest requests three shards with zero replicas per shard. Check that the operator is running and the Valkey nodes are ready before starting a workload. [Deployment script](k8s/deploy-valkey-cluster.sh) · [Cluster manifest](k8s/cr/valkey-cluster.yaml)
+
+The deployment provides the Valkey backend. Configure your proxy to use that backend before running the benchmark or pub/sub scripts. Run the client-kill script from a shell with `kubectl` access to the backend namespace.
+
 ## endurance-test-scripts/
 
 Long-running load and fault-injection scripts. Each one stresses the proxy for a long time (or forever) so you can watch its memory, connection count, error rate and crash behaviour. None of them checks results automatically and none returns a pass/fail exit code. You judge the run from the logs and from the proxy's own metrics.
 
-Common prerequisites:
-- `bash`.
-- A [`redis-benchmark-go`](https://github.com/redis-performance/redis-benchmark-go) binary in the **current working directory** (`./redis-benchmark-go`) for the benchmark-driven scripts (`endurance_automation.sh`, `endurance_streams.sh`).
-- `redis-cli` and `openssl` on the local machine for `endurance_pubsub.sh`.
-- `kubectl` for `endurance_client_kill.sh`. That script runs `redis-cli` inside the Redis pods, so it does not need a local copy.
-- A password. Every script requires a non-empty password and always sends it with `-a`.
-
----
-
 ### `endurance_automation.sh`
 
-**Purpose**: Starts one `redis-benchmark-go` load generator per line of a commands file (for example `commands.txt`). All generators run against the proxy at the same time. When they finish, the script prints a per-command summary of duration, throughput and error count.
+Runs one `valkey-benchmark` process per command. It reads arguments from a commands file, skips blank lines and full-line comments, and preserves quoted arguments without shell expansion. Install `valkey-cli` and `valkey-benchmark` where the script runs.
 
-**What it tests**
-- Every line of `<commands_file>` as one benchmark command. See [`commands.txt`](#commandstxt) for the default set.
-- The proxy under many concurrent mixed-command workloads: one background process per line, started 2 s apart.
+```bash
+./endurance_automation.sh '' 127.0.0.1 7777 500 200 result_cx commands.txt
+```
 
-**How it runs**
-- 7 positional arguments, all required. With any other count it prints usage and exits `1`:
-  `<redis_password> <proxy_host> <proxy_port> <requests> <connections> <res_file> <commands_file>`
-  - `<requests>` is passed as `-rps` (a rate limit in requests per second, not a total) and `<connections>` as `-c`.
-  - Every benchmark also gets `-l` (loop mode) and `--json-out-file`.
-- For each command it runs:
-  `./redis-benchmark-go -a <pwd> -h <host> -p <port> -rps <requests> -c <connections> -l -cmd "<cmd>" --json-out-file results_endurance/<res_file>_<cmd_with_underscores>.json`
-  - Output (stdout and stderr) goes to `results_endurance/<res_file>_<cmd_with_underscores>.log`.
-  - Double quotes in the command are escaped with a backslash, and the whole line is run through `eval`.
-- Prerequisites: `./redis-benchmark-go` in the current directory, and a `results_endurance/` directory that you create yourself.
-- Example:
-  ```bash
-  mkdir -p results_endurance
-  ./endurance_automation.sh "$REDIS_PWD" 127.0.0.1 6379 500 200 result_cx.txt commands.txt
-  ```
+The seven positional arguments are the password, proxy host, proxy port, per-command request rate, connections per command, result prefix, and commands file. Pass an empty password to skip authentication. Set `BENCHMARK_REQUESTS` to override the benchmark client's default total requests per command, and `BENCHMARK_START_DELAY` to override the two-second delay between starts.
 
-**Pass/fail & output**
-- While starting jobs it prints `Executing benchmark command for: <cmd>` and `Benchmark started for: <cmd> (PID: <pid>)`.
-- After `wait` returns, it prints `All benchmarks completed. Processing results...` and then reads each command's log:
-  - If the log contains the string `error` (case-sensitive), it prints `<date> : ERROR : Load test execution failed for command: <cmd> - <requests> requests across <connections> connections.`, then `Error message: <first matching line>`.
-  - Otherwise it parses the last `Total Duration`, `Total Errors` and `Throughput summary` lines and prints `<date> : INFO : Command: <cmd> - <requests> requests across <connections> connections took <N>s and throughput value is <X> with <E> errors.`
-- The exit code does not reflect benchmark failures.
+At startup, the script uses an unauthenticated `valkey-cli` connection to check for `order_stream`. If the stream is absent, it creates the `order_processors` group at `$`. If the stream already exists but lacks the group, create it before running the bundled workload.
 
-**Notes / caveats**
-- **The script does not create `results_endurance/`.** If the directory is missing, every log redirect fails and no benchmark starts.
-- **The summary step reads the wrong path.** It reads `${RES_FILE}_<cmd>.log` from the current directory, without the `results_endurance/` prefix used when writing. As written it does not find the logs: `grep` prints "No such file" errors and every line comes out as INFO with empty duration, throughput and error values. To get a summary, copy or symlink the logs into the current directory, or fix the path.
-- **The summary step only runs after every benchmark exits, and with `-l` they never exit on their own.** In redis-benchmark-go, `-l` loops forever, so `wait` blocks until you kill the processes yourself, for example with `pkill redis-benchmark-go`.
-- **One process runs per command line.** With `commands.txt` that is 94 processes, each holding `<connections>` connections to the proxy. Starting them takes about 3 minutes (94 × 2 s).
-- **The summary text says "requests"**, but the value is the `-rps` rate.
-- **Commands are run through `eval`, and their text becomes part of the output file names.** Shell metacharacters (`*`, `:`, quotes) end up in the file names, and the log names keep the backslashes added by the escaping step.
-- **The `xreadgroup ... ">"` line in `commands.txt` breaks.** In the unquoted `--json-out-file` part of the `eval` string, the `>` is parsed as a shell redirection. That benchmark's output goes to a file named `".json` in the current directory, its `.log` stays empty, and its JSON file name is cut off.
-- **The password is passed on the command line** (`-a`), so it shows up in the process list.
+```bash
+valkey-cli -h 127.0.0.1 -p 7777 XGROUP CREATE order_stream order_processors '$' MKSTREAM
+```
 
----
+Each benchmark writes CSV output and diagnostics to `results_endurance/<result_prefix>_<line_number>.log`. The script waits for the jobs, reports throughput and p50 latency, and exits with status 1 if a benchmark fails. [Script](endurance-test-scripts/endurance_automation.sh)
 
 ### `commands.txt`
 
-**Purpose**: The default list of commands for `endurance_automation.sh`, one complete Redis command with arguments per line (94 lines). It is not a script.
+The bundled workload contains 94 commands for `endurance_automation.sh`. It covers strings, hashes, lists, sets, sorted sets, HyperLogLog, geo, bitmaps, streams, pub/sub, key management, scanning, and server and cluster commands. [Workload](endurance-test-scripts/commands.txt)
 
-**What it tests**
-- Strings: SET, GET, SETEX, SETNX, INCR, DECR, INCRBY, DECRBY, STRLEN, APPEND, GETRANGE, SETRANGE
-- Hashes: HSET (multi-field), HGET, HMGET, HGETALL, HINCRBY, HSETNX, HEXISTS, HKEYS, HVALS, HLEN, HSTRLEN, HRANDFIELD
-- Lists: RPUSH, LRANGE, LPOP, RPOP, LLEN, LINDEX, LREM, LTRIM
-- Sets: SADD, SMEMBERS, SISMEMBER, SCARD, SPOP, SRANDMEMBER, SREM, SMISMEMBER
-- Sorted sets: ZADD, ZRANGE/ZREVRANGE/ZRANGEBYSCORE/ZREVRANGEBYSCORE (WITHSCORES), ZINCRBY, ZREM, ZRANK, ZREVRANK, ZCARD, ZSCORE, ZCOUNT, ZMSCORE, ZRANDMEMBER, ZPOPMAX, ZPOPMIN
-- HyperLogLog: PFADD, PFCOUNT
-- Geo: GEOHASH, GEOPOS, GEORADIUS
-- Bitmaps: SETBIT, GETBIT, BITCOUNT
-- Streams (consumer groups): XREADGROUP, XPENDING, XCLAIM, XAUTOCLAIM
-- Pub/Sub: PUBLISH
-- Generic keys: EXISTS, DEL, UNLINK, EXPIRE, TTL, PERSIST, TYPE
-- Iteration: SCAN (MATCH/COUNT), HSCAN (MATCH), SSCAN, ZSCAN
-- Connection, server and cluster: PING, ECHO, TIME, CLIENT GETNAME, CLIENT SETNAME, CLUSTER SLOTS, CLUSTER KEYSLOT, INFO, INFO memory, INFO clients
-
-**Notes / caveats**
-- **Some commands target data that nothing in the file creates.**
-  - The geo commands use `locations`, but there is no GEOADD, so they return nil or empty replies.
-  - The stream commands use the `order_processors` group on `order_stream`, but there is no XADD or XGROUP CREATE, so expect `NOGROUP` errors. XCLAIM also uses a hard-coded entry ID.
-  - LRANGE, LPOP, LLEN and LREM use `notifications`, but nothing pushes to it. `TYPE user:1003` targets a key that is never set.
-- **All lines run at the same time and in a loop**, so writes and deletes on the same keys race each other (for example `del user:1000` against `set user:1000`, or `unlink user:1001` against the `user:1001` hash commands).
-- **Some of the admin and cluster commands may be rejected by the proxy**, depending on which commands your build supports. Examples: CLUSTER SLOTS, CLIENT SETNAME, TIME, INFO.
-- **The `">"` argument of the XREADGROUP line breaks `endurance_automation.sh`'s file naming** (see that script's caveats).
-
----
+Benchmarks run concurrently, so operations on shared keys can overlap. Geo queries use `locations` without populating it. Stream commands use `order_processors` on `order_stream`, and `XCLAIM` uses a fixed entry ID. Server and cluster commands require support in the proxy build under test.
 
 ### `endurance_streams.sh`
 
-**Purpose**: Starts a fixed set of `redis-benchmark-go` loops in the background, one per command. The set covers streams, a few list and bitmap commands, a RENAME and Lua scripting.
+Runs 14 benchmarks covering streams, lists, bitmaps, and Lua scripting. Setup uses `valkey-cli` to load the Lua script for `EVALSHA`, create or reuse the `mygroup` consumer group, and add an entry whose ID is passed to `XDEL`. The workloads use `valkey-benchmark`.
 
-**What it tests**
-- Streams: XADD (`*` ID), XRANGE, XREVRANGE, XLEN, XDEL, XTRIM MAXLEN, XGROUP SETID
-- Lists: LPUSH, LSET, LPOS
-- Bitmaps: BITPOS
-- Keys: RENAME with brace-tagged keys (`{mykey} {newkey}`)
-- Scripting: EVAL (`redis.call('set', KEYS[1], ARGV[1])`), EVALSHA
+```bash
+PROXY_HOST=127.0.0.1 PROXY_PORT=7777 VALKEY_PWD='' KEY_PREFIX=streams-test: \
+  ./endurance_streams.sh
+```
 
-**How it runs**
-- Environment variables:
-  - `REDIS_PWD`: required.
-  - `PROXY_HOST`: required.
-  - `PROXY_PORT`: optional, default `6379`.
-- Values fixed in the script: `REQUESTS=2000` (passed as `-rps`) and `CONNECTIONS=200` (passed as `-c`).
-- Each command runs as:
-  `./redis-benchmark-go -a "$REDIS_PWD" -h "$PROXY_HOST" -p "$PROXY_PORT" -rps 2000 -c 200 -l -cmd "<cmd>" --json-out-file "<cmd_with_underscores>_output.json"`
-  It runs in the background, with output in `benchmark_output_<cmd_with_underscores>.log`.
-- Prerequisite: `./redis-benchmark-go` in the current directory.
-- Example:
-  ```bash
-  REDIS_PWD=secret PROXY_HOST=127.0.0.1 PROXY_PORT=6379 ./endurance_streams.sh
-  ```
+- `PROXY_HOST` is required. `PROXY_PORT` defaults to `7777`. Set `VALKEY_PWD` for an authenticated endpoint.
+- `REQUESTS` sets the per-benchmark rate in requests per second and defaults to `2000`. `CONNECTIONS` defaults to `200` per benchmark.
+- `KEY_PREFIX` is optional and is prepended to `mylist`, `mykey`, and `mystream`.
 
-**Pass/fail & output**
-- There is no result processing. The script prints `Running benchmark for command: <cmd>` for each job, then exits immediately without waiting.
-- Check results in the per-command `.log` and `*_output.json` files in the current directory.
-
-**Notes / caveats**
-- **The benchmarks keep running after the script exits.** They are started with `-l` and never waited on, so stop them yourself, for example with `pkill redis-benchmark-go`.
-- **The EVALSHA SHA (`f77c0e99...`) is not the SHA1 of the script used in the EVAL line**, which is `55b22c0d...`. The `SCRIPT LOAD` line is commented out. EVALSHA therefore returns `NOSCRIPT` unless a script with that SHA is already loaded on the backend.
-- **The RENAME keys do not share a hash tag.** `{mykey}` and `{newkey}` hash to different slots, so a Redis Cluster backend can reject the command with `CROSSSLOT`. The key `{mykey}` is also never created (the other commands use `mykey` without braces), so the command otherwise returns `ERR no such key`.
-- **`XGROUP SETID` targets the group `mygroup`, which is never created**, so expect errors. `XDEL` uses a hard-coded entry ID, so it deletes nothing.
-- **The `output_file` variable is defined but never used.**
-- **How the quoted Lua body in the EVAL line is split into arguments is decided by redis-benchmark-go's `-cmd` parsing.** Check that it reaches the proxy as intended.
-
----
+Jobs start two seconds apart and the script waits for them. It overwrites `endurance_streams_result.csv` alongside the script and appends the last output line from each benchmark. Setup failures cause a nonzero exit. Inspect stderr and the CSV for individual benchmark failures because the parent script does not collect those exit statuses. [Script](endurance-test-scripts/endurance_streams.sh)
 
 ### `endurance_pubsub.sh`
 
-**Purpose**: A long-running pub/sub soak test through the proxy. It opens thousands of channel and pattern subscriptions, publishes to every channel at a capped rate, and mixes in random subscribe, unsubscribe and publish operations. All of this repeats for many iterations.
+Runs a pub/sub soak test with `valkey-cli` and OpenSSL. Each iteration opens channel and pattern subscriptions, publishes to the generated channels, and runs random subscribe, unsubscribe, and publish operations while publishing is active.
 
-**What it tests**
-- Pub/Sub: SUBSCRIBE, PSUBSCRIBE, PUBLISH, UNSUBSCRIBE, PUNSUBSCRIBE.
-- What happens in each iteration:
-  1. Opens 7000 `SUBSCRIBE` and 3000 `PSUBSCRIBE` connections, each one a background `redis-cli` process. Channel names are `channel_<16 hex>` and patterns are `pattern_<8 hex>*`.
-  2. In the background, publishes to every subscribed channel in turn for 1800 s, sleeping 1 s after every 100 messages.
-  3. While publishing runs, performs one random operation every 10 s on a newly generated channel or pattern: SUBSCRIBE, PUBLISH, UNSUBSCRIBE, PSUBSCRIBE or PUNSUBSCRIBE.
-  4. Sends UNSUBSCRIBE and PUNSUBSCRIBE for every channel and pattern from that iteration, one `redis-cli` call each. It then pauses 5 s, except after the last iteration.
+```bash
+VALKEY_HOST=127.0.0.1 VALKEY_PORT=7777 VALKEY_PWD='' \
+  NUM_CHANNELS=10 NUM_PATTERNS=5 PUBLISH_DURATION=10 ITERATIONS=1 \
+  ./endurance_pubsub.sh
+```
 
-**How it runs**
-- Environment variables:
-  - `REDIS_HOST`: required, the proxy host.
-  - `REDIS_PORT`: optional, default `6379`.
-  - `REDIS_PWD`: required.
-- Values fixed in the script:
-  - `NUM_CHANNELS=7000`
-  - `NUM_PATTERNS=3000`
-  - `PUBLISH_DURATION=1800` (seconds)
-  - `PUBLISH_IOPS=100` (messages per second)
-  - `RANDOM_OPERATIONS_INTERVAL=10` (seconds)
-  - `ITERATIONS=2000`
-- Prerequisites:
-  - `redis-cli` and `openssl` (used for random names).
-  - Process and file-descriptor limits high enough for at least 10,000 concurrent `redis-cli` processes (`ulimit -u` / `ulimit -n`).
-  - A proxy build that accepts SUBSCRIBE/PSUBSCRIBE. If the proxy rejects them, the subscriber processes simply exit, and only PUBLISH gets exercised.
-- Example:
-  ```bash
-  REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PWD=secret ./endurance_pubsub.sh
-  ```
+| Variable | Default |
+| --- | --- |
+| `VALKEY_HOST` | Required |
+| `VALKEY_PORT` | `6379` |
+| `VALKEY_PWD` | Empty for an unauthenticated proxy |
+| `NUM_CHANNELS` | `7000` |
+| `NUM_PATTERNS` | `3000` |
+| `PUBLISH_DURATION` | `1800` seconds per iteration |
+| `PUBLISH_IOPS` | `100` messages per one-second pause |
+| `RANDOM_OPERATIONS_INTERVAL` | `10` seconds |
+| `ITERATIONS` | `2000` |
 
-**Pass/fail & output**
-- There are no assertions. Progress goes to stdout:
-  - `Starting iteration i of N...`, `Subscribing to ...`, `Starting to publish messages for 1800 seconds...`, `Performing random operations...`
-  - One line per random operation (`Subscribed to ...`, `Published to ...`, `Unsubscribed from ...`, `PSubscribed to ...`, `PUnsubscribed from ...`)
-  - `Unsubscribing from channels and patterns...`, `Iteration i of N complete.`, `Pausing before next iteration...`, and finally `All iterations complete.`
-- Subscriber output is sent to `/dev/null`, so delivery of messages is never checked. Judge the run by the proxy's stability, memory and connection metrics.
-
-**Notes / caveats**
-- **Subscriber connections are never closed, so they pile up.** The unsubscribe step and the random UNSUBSCRIBE/PUNSUBSCRIBE each open a new `redis-cli` connection. Subscriptions belong to the connection that made them, so the original SUBSCRIBE and PSUBSCRIBE processes keep running. Each iteration adds about 10,000 more processes and proxy connections.
-- **Random operations act on brand-new names.** They never touch the channels or patterns subscribed in step 1.
-- **Pattern subscribers never receive anything.** Patterns are `pattern_*` while publishes go to `channel_*` names, so the pattern side only exercises subscription handling.
-- **A full run takes a very long time.** 2000 iterations of about 30 minutes each is roughly 1000 hours, plus the time spent subscribing and unsubscribing. Lower `ITERATIONS` and `PUBLISH_DURATION` for shorter runs.
-- **The real publish rate is lower than `PUBLISH_IOPS`.** Every PUBLISH starts a new `redis-cli` process, and the 1800 s limit is only checked after a full pass over all 7000 channels.
-- **The terminal fills with password warnings.** PUBLISH calls redirect only stdout, so `redis-cli` prints its `-a` password warning on stderr every time.
-
----
+The script reports progress and discards subscriber output. Watch proxy metrics for the effect of the load. Unsubscribe commands use fresh connections, so the original subscriber processes can persist across iterations. The generated `pattern_*` subscriptions do not match the `channel_*` destinations. Default settings require process and file-descriptor limits that can support at least 10,000 concurrent subscribers per iteration. [Script](endurance-test-scripts/endurance_pubsub.sh)
 
 ### `endurance_client_kill.sh`
 
-**Purpose**: Injects faults on a Kubernetes-hosted Redis cluster. On a fixed interval it runs `CLIENT KILL` on every matching backend pod, which forces the proxy to deal with dropped upstream connections. Run it alongside the load scripts above.
+Injects backend connection failures while another workload runs through the proxy. It requires `kubectl` access to list `ValkeyNode` resources and exec into the selected pods. Each cycle reads `.status.podIP` and `.status.podName` from nodes whose `.status.role` is `primary`. In each pod's `server` container, it runs `valkey-cli` against that pod's IP on port `6379` and issues `CLIENT KILL TYPE normal` and `CLIENT KILL TYPE pubsub`.
 
-**What it tests**
-- Server/admin: `CLIENT KILL TYPE normal`, then `CLIENT KILL TYPE pubsub`, on each pod selected by the label. These are sent directly to the backend, not through the proxy.
-- Shows how the proxy reconnects and how clients see errors when backend connections drop in the middle of the load.
+```bash
+NAMESPACE=default VALKEY_PASSWORD='' ./endurance_client_kill.sh
+```
 
-**How it runs**
-- Environment variables:
-  - `NAMESPACE`: required, the Kubernetes namespace of the Redis pods.
-  - `LABEL_SELECTOR`: optional, default `role=Master`. Label values are case-sensitive.
-  - `REDIS_PASSWORD`: required.
-- Values fixed in the script: `REDIS_PORT=6379` and `INTERVAL_MINUTES=900`.
-- Each cycle:
-  1. Lists the pods with `kubectl get pods -n $NAMESPACE -l $LABEL_SELECTOR` (jsonpath output) to get each pod's IP and name.
-  2. For each pod, runs `kubectl exec -n $NAMESPACE <pod> -- redis-cli -h <podIP> -p 6379 -a $REDIS_PASSWORD CLIENT KILL TYPE <type>` once for `normal` and once for `pubsub`.
-  3. Sleeps `INTERVAL_MINUTES` seconds, then starts the next cycle.
-- Prerequisites:
-  - `kubectl` with access to the namespace and permission to `exec` into the pods.
-  - `redis-cli` available in the pod's default container.
-- Example:
-  ```bash
-  NAMESPACE=redis LABEL_SELECTOR=role=master REDIS_PASSWORD=secret ./endurance_client_kill.sh
-  ```
-
-**Pass/fail & output**
-- It loops forever; stop it with Ctrl-C. For each cycle it prints:
-  - `Starting client kill process at <date>`
-  - `Processing pod: <name> (<ip>)`
-  - `Killing <type> clients on <ip>`, followed by the number of clients each `CLIENT KILL` removed
-  - `Finished client kill process at <date>`
-  - `Waiting for 900 minutes before next iteration...`
-- There are no assertions and no meaningful exit code. Judge the effect through the proxy and the load scripts running alongside.
-
-**Notes / caveats**
-- **The interval is in seconds, not minutes.** `INTERVAL_MINUTES=900` is passed straight to `sleep`, so the wait is 900 s (15 minutes), even though the message says "Waiting for 900 minutes".
-- **It kills every normal and pubsub client on each backend**, not only the proxy's connections. Any other client connected to those nodes is dropped too.
-- **`kill_redis_clients` relies on a global variable.** It uses `$pod_name` from the calling loop rather than a parameter.
-- **If no pods match the selector, the cycle still runs `kubectl exec` with an empty pod name and IP**, which fails.
-- **This script only works with Kubernetes-hosted Redis.** With any other setup, run `CLIENT KILL TYPE normal|pubsub` against each backend node yourself.
+Set `NAMESPACE` to the namespace where you deployed the cluster. `VALKEY_PASSWORD` defaults to empty and is passed to the backend client with `--user default`. The script selects nodes by their reported role. It prints the selected pods and kill results, then sleeps for 900 seconds (15 minutes) and repeats until stopped. The kill commands affect all clients of the selected types on those nodes. [Script](endurance-test-scripts/endurance_client_kill.sh)
