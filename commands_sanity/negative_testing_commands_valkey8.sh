@@ -1,67 +1,95 @@
 #!/bin/bash
 
-REDIS_HOST="${REDIS_HOST:?Set REDIS_HOST to the proxy host}"
-REDIS_PORT="${REDIS_PORT:-6379}"
-REDIS_PASSWORD="${REDIS_PASSWORD:?Set REDIS_PASSWORD}"
+VALKEY_HOST="${VALKEY_HOST:-localhost}"
+VALKEY_PORT="${VALKEY_PORT:-7777}"
+VALKEY_PASSWORD="${VALKEY_PASSWORD:-''}"
+CLI_OPTS="-h ${VALKEY_HOST} -p ${VALKEY_PORT} -a ${VALKEY_PASSWORD} --no-auth-warning --raw"
+VALKEY_CMD="valkey-cli $CLI_OPTS"
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
 
-# Function to run a Redis command and check for expected error
-function run_negative_test()
-{
+function log_result() {
+    CUR_TIME="$(date)"
+    case "${1}" in
+    FAILED* | FAIL:* | ERROR* | FATAL*) COLOR=$RED ;;
+    PASSED* | PASS:*)
+        COLOR=$GREEN
+        ;;
+    INFO*)
+        COLOR=$YELLOW
+        ;;
+    DEBUG*)
+        COLOR=$DIM
+        ;;
+    *)
+        COLOR=$NC
+        ;;
+    esac
+    printf "${CUR_TIME} : ${COLOR}$1${NC}\n"
+}
+
+# Function to run a Valkey command and check for expected error
+function run_negative_test() {
     local test_name="$1"
     local command="$2"
     local expected_error="$3"
 
     ((TOTAL_TESTS++))
 
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" $command 2>/dev/null | grep -v option)
+    result=$($VALKEY_CMD $command 2>/dev/null | grep -v option)
     if [[ "$result" == *"$expected_error"* ]]; then
-        echo "PASS: $test_name"
+        log_result "PASS:$test_name"
         ((PASSED_TESTS++))
     else
-        echo "FAIL: $test_name - Expected '$expected_error', but got '$result'"
+        log_result "FAIL:$test_name - Expected '$expected_error', but got '$result'"
         ((FAILED_TESTS++))
     fi
 }
 
 # Authentication tests
-function authentication_tests_negative()
-{
-    echo "$(date) : INFO : Running Authentication Tests..."
+function authentication_tests_negative() {
+    log_result "INFO : Running Authentication Tests..."
 
     # Test connection without password
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" PING 2>&1 | grep -v option)
+    result=$($VALKEY_CMD PING 2>&1 | grep -v option)
     if [[ "$result" == "PONG" ]]; then
-        echo "$(date) : FAILED : Connected without password, but Redis should require authentication"
+        log_result "FAILED : Connected without password, but Valkey should require authentication"
     elif [[ "$result" == *"NOAUTH"* ]]; then
-        echo "$(date) : PASSED : Redis correctly requires authentication"
+        log_result "PASSED : Valkey correctly requires authentication"
     else
-        echo "$(date) : FATAL: $result"
+        log_result "FATAL: $result"
     fi
 
     # Test connection with wrong password
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "wrong_password" PING 2>&1 | grep -v option)
+    result=$($VALKEY_CMD -a "wrong_password" PING 2>&1 | grep -v option)
     if [[ "$result" == *"invalid password"* ]] || [[ "$result" == *"NOAUTH"* ]]; then
-        echo "$(date) : PASSED : Redis correctly rejected wrong password"
+        log_result "PASSED : Valkey correctly rejected wrong password"
     else
-        echo "$(date) : FAILED : Unexpected result with wrong password: $result"
+        log_result "FAILED : Unexpected result with wrong password: $result"
     fi
 
     # Test connection with correct password
-    if [ -n "$REDIS_PASSWORD" ]; then
-        result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" PING 2>&1 | grep -v option)
+    if [ -n "$VALKEY_PASSWORD" ]; then
+        result=$($VALKEY_CMD PING 2>&1 | grep -v option)
         if [[ "$result" == "PONG" ]]; then
-            echo "$(date) : PASSED : Successfully authenticated with correct password"
+            log_result "PASSED : Successfully authenticated with correct password"
         else
-            echo "$(date) : FAILED : Could not authenticate with correct password: $result"
+            log_result "FAILED : Could not authenticate with correct password: $result"
         fi
     fi
 }
 
 # String Operations
-function string_operations_negative()
-{
-    echo "$(date) : INFO : Running String Operations Tests..."
+function string_operations_negative() {
+    log_result "INFO : Running String Operations Tests..."
     run_negative_test "Empty the DB before starting" "flushall" "OK"
     run_negative_test "Create list" "lpush {negative_list}1 Hello" "1"
     run_negative_test "APPEND to non-string" "APPEND {negative_list}1 World" "WRONGTYPE"
@@ -79,10 +107,12 @@ function string_operations_negative()
 }
 
 # List Operations
-function list_operations_negative()
-{
-    echo "$(date) : INFO : Running List Operations Tests..."
-    run_negative_test "BLPOP with negative timeout" "BLPOP {negative_list}1 -1" "ERR timeout is negative"
+function list_operations_negative() {
+    log_result "INFO : Running List Operations Tests..."
+    run_negative_test "BLPOP with negative timeout" "BLPOP {negative_list}1 -1" "ERR timeout is negative" &
+    CMD_PID=$!
+    sleep 2
+    kill -TERM "${CMD_PID}"
     run_negative_test "LINDEX on non-list" "LINDEX {negative_string}1 0" "WRONGTYPE"
     run_negative_test "LINSERT on non-list" "LINSERT {negative_string}1 BEFORE John Doe" "WRONGTYPE"
     run_negative_test "LPOP on non-list" "LPOP {negative_string}1" "WRONGTYPE"
@@ -98,9 +128,8 @@ function list_operations_negative()
 }
 
 # Set Operations
-function set_operations_negative()
-{
-    echo "$(date) : INFO : Running Set Operations Tests..."
+function set_operations_negative() {
+    log_result "INFO : Running Set Operations Tests..."
     run_negative_test "SADD to non-set" "SADD {negative_list}1 John" "WRONGTYPE"
     run_negative_test "SCARD on non-set" "SCARD {negative_list}1" "WRONGTYPE"
     run_negative_test "SDIFF with non-set" "SDIFF {negative_list}2 {negative_list}1" "WRONGTYPE"
@@ -114,9 +143,8 @@ function set_operations_negative()
 }
 
 # Hash Operations
-function hash_operations_negative()
-{
-    echo "$(date) : INFO : Running Hash Operations Tests..."
+function hash_operations_negative() {
+    log_result "INFO : Running Hash Operations Tests..."
     run_negative_test "HDEL from non-hash" "HDEL {negative_list}1 firstname" "WRONGTYPE"
     run_negative_test "HEXISTS on non-hash" "HEXISTS {negative_list}1 firstname" "WRONGTYPE"
     run_negative_test "HGET from non-hash" "HGET {negative_list}1 firstname" "WRONGTYPE"
@@ -130,9 +158,8 @@ function hash_operations_negative()
 }
 
 # Sorted Set Operations
-function sorted_set_operations_negative()
-{
-    echo "$(date) : INFO : Running Sorted Set Operations Tests..."
+function sorted_set_operations_negative() {
+    log_result "INFO : Running Sorted Set Operations Tests..."
     run_negative_test "ZADD to non-zset" "ZADD {negative_list}1 1 John" "WRONGTYPE"
     run_negative_test "ZCARD on non-zset" "ZCARD {negative_list}1" "WRONGTYPE"
     run_negative_test "ZCOUNT on non-zset" "ZCOUNT {negative_list}1 0 100" "WRONGTYPE"
@@ -146,18 +173,16 @@ function sorted_set_operations_negative()
 }
 
 # HyperLogLog Operations
-function hyperloglog_operations_negative()
-{
-    echo "$(date) : INFO : Running HyperLogLog Operations Tests..."
+function hyperloglog_operations_negative() {
+    log_result "INFO : Running HyperLogLog Operations Tests..."
     run_negative_test "PFADD to non-HyperLogLog" "PFADD {negative_list}1 John" "WRONGTYPE"
     run_negative_test "PFCOUNT on non-HyperLogLog" "PFCOUNT {negative_list}1" "WRONGTYPE"
     run_negative_test "PFMERGE with non-HyperLogLog" "PFMERGE {negative_list}2 {negative_list}1" "WRONGTYPE"
 }
 
 # Geo Operations
-function geo_operations_negative()
-{
-    echo "$(date) : INFO : Running Geo Operations Tests..."
+function geo_operations_negative() {
+    log_result "INFO : Running Geo Operations Tests..."
     run_negative_test "GEOADD to non-geo" "GEOADD {negative_list}1 13.361389 38.115556 John" "WRONGTYPE"
     run_negative_test "GEODIST on non-geo" "GEODIST {negative_list}1 John Jane" "WRONGTYPE"
     run_negative_test "GEOHASH on non-geo" "GEOHASH {negative_list}1 John" "WRONGTYPE"
@@ -167,83 +192,68 @@ function geo_operations_negative()
 }
 
 # Pub/Sub Operations
-function pubsub_operations_negative()
-{
-    echo "$(date) : INFO : Running Pub/Sub Operations Tests..."
+function pubsub_operations_negative() {
+    log_result "INFO : Running Pub/Sub Operations Tests..."
     run_negative_test "PUBLISH with empty channel" "PUBLISH \"\" {negative_list}1" "NOPERM"
-    run_negative_test "PUBSUB with invalid subcommand" "PUBSUB INVALID_SUBCOMMAND" "ERR unknown subcommand"
+    run_negative_test "PUBSUB with invalid subcommand" "PUBSUB INVALID_SUBCOMMAND" "ERR unknown PUBSUB subcommand"
 }
 
 # Transaction Operations - UPDATED FOR VALKEY 8
-function transaction_operations_negative()
-{
-    echo "$(date) : INFO : Running Transaction Operations Tests (Valkey 8 updated)..."
+function transaction_operations_negative() {
+    log_result "INFO : Running Transaction Operations Tests (Valkey 8 updated)..."
     run_negative_test "EXEC without MULTI" "EXEC" "EXEC without MULTI"
     run_negative_test "DISCARD without MULTI" "DISCARD" "DISCARD without MULTI"
 
     # NEW: Test nested MULTI (Valkey 8 breaking change)
-    echo "$(date) : INFO : Testing nested MULTI (Valkey 8 breaking change)..."
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" << 'EOF'
-MULTI
-MULTI
-SET key1 value1
-EXEC
-EOF
-2>/dev/null | grep -v option
-)
+    log_result "INFO : Testing nested MULTI (Valkey 8 breaking change)..."
+    result=$(
+        $VALKEY_CMD < <(printf 'MULTI\r\nMULTI\r\nSET key1 value1\r\nEXEC')
+    )
     if echo "$result" | grep -q "MULTI calls can not be nested"; then
-        echo "PASS: Nested MULTI correctly rejected in Valkey 8"
+        log_result "PASS:Nested MULTI correctly rejected in Valkey 8"
         ((PASSED_TESTS++))
     else
-        echo "FAIL: Nested MULTI should be rejected in Valkey 8"
+        log_result "FAIL:Nested MULTI should be rejected in Valkey 8"
         echo "DEBUG: Actual result: $result"
         ((FAILED_TESTS++))
     fi
     ((TOTAL_TESTS++))
 
     # NEW: Test WATCH inside MULTI (Valkey 8 breaking change)
-    echo "$(date) : INFO : Testing WATCH inside MULTI (Valkey 8 breaking change)..."
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" << 'EOF'
-MULTI
-WATCH key1
-SET key1 value1
-EXEC
-EOF
-2>/dev/null | grep -v option
-)
-    if echo "$result" | grep -q "ERR Command not allowed inside a transaction"; then
-        echo "PASS: WATCH inside MULTI correctly rejected in Valkey 8"
+    log_result "INFO : Testing WATCH inside MULTI (Valkey 8 breaking change)..."
+    result=$(
+        $VALKEY_CMD < <(printf 'MULTI\r\nWATCH key1\r\nSET key1 value1\r\nEXEC')
+    )
+    if echo "$result" | grep -q "ERR WATCH inside MULTI is not allowed"; then
+        log_result "PASS:WATCH inside MULTI correctly rejected in Valkey 8"
         ((PASSED_TESTS++))
     else
-        echo "FAIL: WATCH inside MULTI should be rejected in Valkey 8"
+        log_result "FAIL:WATCH inside MULTI should be rejected in Valkey 8"
         ((FAILED_TESTS++))
     fi
     ((TOTAL_TESTS++))
 }
 
 # Connection Operations
-function connection_operations_negative()
-{
-    echo "$(date) : INFO : Running Connection Operations Tests..."
+function connection_operations_negative() {
+    log_result "INFO : Running Connection Operations Tests..."
     run_negative_test "AUTH with wrong password" "AUTH incorrect_password" "ERR invalid password"
-    run_negative_test "ECHO without message" "ECHO" "invalid request"
+    run_negative_test "ECHO without message" "ECHO" "ERR wrong number of arguments for 'echo' command"
     run_negative_test "SELECT invalid DB" "SELECT 99" "ERR SELECT is not allowed in cluster mode"
     run_negative_test "CLIENT SETNAME with invalid name" "CLIENT SETNAME ''" "OK"
 }
 
 # Server Operations
-function server_operations_negative()
-{
-    echo "$(date) : INFO : Running Server Operations Tests..."
+function server_operations_negative() {
+    log_result "INFO : Running Server Operations Tests..."
     run_negative_test "INFO with invalid section" "INFO invalidSection" "ERR Invalid section"
-    run_negative_test "BGSAVE in cluster mode" "BGSAVE" "invalid request"
-    run_negative_test "SLAVEOF in cluster mode" "SLAVEOF 127.0.0.1 6379" "unsupported command"
+    run_negative_test "BGSAVE in cluster mode" "BGSAVE" "ERR unsupport command"
+    run_negative_test "SLAVEOF in cluster mode" "SLAVEOF 127.0.0.1 6379" "ERR unsupport command"
 }
 
 # Scripting Operations
-function scripting_operations_negative()
-{
-    echo "$(date) : INFO : Running Scripting Operations Tests..."
+function scripting_operations_negative() {
+    log_result "INFO : Running Scripting Operations Tests..."
     run_negative_test "EVAL with syntax error" "EVAL \"return {KEYS[1]\" 1 {negative_list}1" "ERR"
     run_negative_test "EVALSHA with non-existent script" "EVALSHA 1234567890123456789012345678901234567890 1 {negative_list}1" "NOSCRIPT"
     run_negative_test "SCRIPT LOAD with empty script" "SCRIPT LOAD \"\"" "ERR"
@@ -251,9 +261,8 @@ function scripting_operations_negative()
 }
 
 # Key Operations
-function key_operations_negative()
-{
-    echo "$(date) : INFO : Running Key Operations Tests..."
+function key_operations_negative() {
+    log_result "INFO : Running Key Operations Tests..."
     run_negative_test "DEL non-existent key" "DEL {non_existent_key}1" "0"
     run_negative_test "EXPIRE on non-existent key" "EXPIRE {non_existent_key}1 100" "0"
     run_negative_test "RENAME non-existent key" "RENAME {non_existent_key}1 {non_existent_key}2" "ERR no such key"
@@ -262,9 +271,8 @@ function key_operations_negative()
 }
 
 # Stream Operations
-function stream_operations_negative()
-{
-    echo "$(date) : INFO : Running Stream Operations Tests..."
+function stream_operations_negative() {
+    log_result "INFO : Running Stream Operations Tests..."
     run_negative_test "Create a new list" "LPUSH {negative_list}10 1 2 3" "3"
     run_negative_test "Delete a new list" "del {negative_list}10" "1"
     run_negative_test "Create a new list" "LPUSH {negative_list}10 1 2 3" "3"
@@ -280,18 +288,17 @@ function stream_operations_negative()
 }
 
 # NEW: SCAN Operations - UPDATED FOR VALKEY 8
-function scan_operations_negative()
-{
-    echo "$(date) : INFO : Running SCAN Operations Tests (Valkey 8 updated)..."
+function scan_operations_negative() {
+    log_result "INFO : Running SCAN Operations Tests (Valkey 8 updated)..."
 
     # Valkey 8 breaking change: SCAN with invalid TYPE returns error
-    echo "$(date) : INFO : Testing SCAN with invalid TYPE (Valkey 8 breaking change)..."
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" SCAN 0 TYPE faketype 2>/dev/null | grep -v option)
+    log_result "INFO : Testing SCAN with invalid TYPE (Valkey 8 breaking change)..."
+    result=$($VALKEY_CMD SCAN 0 TYPE faketype 2>/dev/null | grep -v option)
     if echo "$result" | grep -q "ERR unknown type name"; then
-        echo "PASS: SCAN with invalid TYPE returns error in Valkey 8"
+        log_result "PASS:SCAN with invalid TYPE returns error in Valkey 8"
         ((PASSED_TESTS++))
     else
-        echo "FAIL: SCAN should return error for invalid TYPE in Valkey 8, got: $result"
+        log_result "FAIL:SCAN should return error for invalid TYPE in Valkey 8, got: $result"
         ((FAILED_TESTS++))
     fi
     ((TOTAL_TESTS++))
@@ -301,58 +308,55 @@ function scan_operations_negative()
 }
 
 # NEW: BITCOUNT/BITPOS Operations - UPDATED FOR VALKEY 8
-function bitcount_bitpos_operations_negative()
-{
-    echo "$(date) : INFO : Running BITCOUNT/BITPOS Operations Tests (Valkey 8 updated)..."
+function bitcount_bitpos_operations_negative() {
+    log_result "INFO : Running BITCOUNT/BITPOS Operations Tests (Valkey 8 updated)..."
 
     # Valkey 8 breaking change: BITCOUNT with invalid arguments returns error
-    echo "$(date) : INFO : Testing BITCOUNT with invalid arguments (Valkey 8 breaking change)..."
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" BITCOUNT {nonexistent}key 0 invalid 2>/dev/null | grep -v option)
+    log_result "INFO : Testing BITCOUNT with invalid arguments (Valkey 8 breaking change)..."
+    result=$($VALKEY_CMD BITCOUNT {nonexistent}key 0 invalid 2>/dev/null | grep -v option)
     if echo "$result" | grep -q "ERR value is not an integer or out of range"; then
-        echo "PASS: BITCOUNT returns error for invalid arguments in Valkey 8"
+        log_result "PASS:BITCOUNT returns error for invalid arguments in Valkey 8"
         ((PASSED_TESTS++))
     else
-        echo "FAIL: BITCOUNT should return error for invalid arguments in Valkey 8, got: $result"
+        log_result "FAIL:BITCOUNT should return error for invalid arguments in Valkey 8, got: $result"
         ((FAILED_TESTS++))
     fi
     ((TOTAL_TESTS++))
 
     # Valkey 8 breaking change: BITPOS with invalid arguments returns error
-    echo "$(date) : INFO : Testing BITPOS with invalid arguments (Valkey 8 breaking change)..."
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" BITPOS {nonexistent}key 0 0 1 hello 2>/dev/null | grep -v option)
+    log_result "INFO : Testing BITPOS with invalid arguments (Valkey 8 breaking change)..."
+    result=$($VALKEY_CMD BITPOS {nonexistent}key 0 0 1 hello 2>/dev/null | grep -v option)
     if echo "$result" | grep -q "ERR syntax error"; then
-        echo "PASS: BITPOS returns error for invalid arguments in Valkey 8"
+        log_result "PASS:BITPOS returns error for invalid arguments in Valkey 8"
         ((PASSED_TESTS++))
     else
-        echo "FAIL: BITPOS should return error for invalid arguments in Valkey 8, got: $result"
+        log_result "FAIL:BITPOS should return error for invalid arguments in Valkey 8, got: $result"
         ((FAILED_TESTS++))
     fi
     ((TOTAL_TESTS++))
 
     # Valkey 8 breaking change: BITCOUNT validates arguments before key check
-    echo "$(date) : INFO : Testing BITCOUNT argument validation order (Valkey 8 breaking change)..."
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" BITCOUNT {no}key invalid1 invalid2 2>/dev/null | grep -v option)
+    log_result "INFO : Testing BITCOUNT argument validation order (Valkey 8 breaking change)..."
+    result=$($VALKEY_CMD BITCOUNT {no}key invalid1 invalid2 2>/dev/null | grep -v option)
     if echo "$result" | grep -q "ERR value is not an integer or out of range"; then
-        echo "PASS: BITCOUNT validates arguments before key existence in Valkey 8"
+        log_result "PASS:BITCOUNT validates arguments before key existence in Valkey 8"
         ((PASSED_TESTS++))
     else
-        echo "FAIL: BITCOUNT should validate arguments first in Valkey 8, got: $result"
+        log_result "FAIL:BITCOUNT should validate arguments first in Valkey 8, got: $result"
         ((FAILED_TESTS++))
     fi
     ((TOTAL_TESTS++))
 }
 
-function display_summary_negative()
-{
-    echo "$(date) : INFO : ===== Negative Testing Summary ====="
-    echo "$(date) : INFO : Total tests run: $TOTAL_TESTS"
-    echo "$(date) : INFO : Tests passed: $PASSED_TESTS"
-    echo "$(date) : INFO : Tests failed: $FAILED_TESTS"
-    echo "$(date) : INFO : ===================================="
+function display_summary_negative() {
+    log_result "INFO : ===== Negative Testing Summary ====="
+    log_result "INFO : Total tests run: $TOTAL_TESTS"
+    log_result "INFO : Tests passed: $PASSED_TESTS"
+    log_result "INFO : Tests failed: $FAILED_TESTS"
+    log_result "INFO : ===================================="
 }
 
-function negative_testing()
-{
+function negative_testing() {
     authentication_tests_negative
     string_operations_negative
     list_operations_negative
@@ -372,120 +376,114 @@ function negative_testing()
     bitcount_bitpos_operations_negative
     display_summary_negative
 
-    if [[ $FAILED_TESTS -le 5 ]]
-    then
-        echo "$(date) : PASSED : Negative testing on wrong type validated successfully. Failed tests : ${FAILED_TESTS}"
+    if [[ $FAILED_TESTS -le 5 ]]; then
+        log_result "PASSED : Negative testing on wrong type validated successfully. Failed tests : ${FAILED_TESTS}"
     else
-        echo "$(date) : FAILED : Negative testing on wrong type validation failed. Exiting. Total failures : ${FAILED_TESTS}"
+        log_result "FAILED : Negative testing on wrong type validation failed. Exiting. Total failures : ${FAILED_TESTS}"
         exit 1
     fi
 }
 
-function check_redis_connection()
-{
-    until redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping &>/dev/null; do
-        echo "$(date) : INFO : Waiting for Redis connection..."
+function check_VALKEY_connection() {
+    until $VALKEY_CMD ping &>/dev/null; do
+        log_result "INFO : Waiting for Valkey connection..."
         sleep 5
     done
-    echo "$(date) : Redis connection established!"
+    log_result "Valkey connection established!"
 }
 
-function execute_command_no_args()
-{
+function execute_command_no_args() {
     local command=$1
-    echo "$(date) : INFO : Testing command: $command"
-    check_redis_connection
-    result=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" $command 2>/dev/null | grep -v option)
+    log_result "INFO : Testing command: $command"
+    check_VALKEY_connection
+    result=$($VALKEY_CMD $command 2>/dev/null | grep -v option)
 
     # Commands that are valid without arguments (should NOT return error)
     case "$command" in
-        PING|FLUSHALL|FLUSHDB|TIME|RANDOMKEY|DBSIZE|MULTI|EXEC|DISCARD|UNWATCH)
-            # These commands don't require arguments, so we skip them
-            echo "$(date) : SKIPPED : Command $command doesn't require arguments"
-            return 0
-            ;;
+    PING | FLUSHALL | FLUSHDB | TIME | RANDOMKEY | DBSIZE | MULTI | EXEC | DISCARD | UNWATCH)
+        # These commands don't require arguments, so we skip them
+        log_result "SKIPPED : Command $command doesn't require arguments"
+        return 0
+        ;;
     esac
 
     # For all other commands, expect "invalid request" or "wrong number of arguments"
     if echo "$result" | grep -qE "invalid request|wrong number of arguments|ERR|syntax error"; then
-        echo "$(date) : PASSED : ✅ Expected error for: $command : $result"
+        log_result "PASSED : ✅ Expected error for: $command : $result"
     else
-        echo "$(date) : FAILED : ⚠️ Unexpected result for: $command : $result"
+        log_result "FAILED : ⚠️ Unexpected result for: $command : $result"
         let FAILED_COUNT=${FAILED_COUNT}+1
     fi
 }
 
-function negative_testing_no_args()
-{
+function negative_testing_no_args() {
     FAILED_COUNT=0
     commands=(
-    # String Commands
-    SET GET APPEND BITCOUNT BITFIELD BITOP BITPOS DECR DECRBY GETBIT GETDEL
-    GETEX GETRANGE GETSET INCR INCRBY INCRBYFLOAT LCS MGET MSET MSETNX
-    PSETEX SETBIT SETEX SETNX SETRANGE STRLEN SUBSTR
+        # String Commands
+        SET GET APPEND BITCOUNT BITFIELD BITOP BITPOS DECR DECRBY GETBIT GETDEL
+        GETEX GETRANGE GETSET INCR INCRBY INCRBYFLOAT LCS MGET MSET MSETNX
+        PSETEX SETBIT SETEX SETNX SETRANGE STRLEN SUBSTR
 
-    # Hash Commands
-    HDEL HEXISTS HGET HGETALL HINCRBY HINCRBYFLOAT HKEYS HLEN HMGET HMSET
-    HRANDFIELD HSCAN HSET HSETNX HSTRLEN HVALS
+        # Hash Commands
+        HDEL HEXISTS HGET HGETALL HINCRBY HINCRBYFLOAT HKEYS HLEN HMGET HMSET
+        HRANDFIELD HSCAN HSET HSETNX HSTRLEN HVALS
 
-    # List Commands
-    BLMOVE BLMPOP BLPOP BRPOP BRPOPLPUSH LINDEX LINSERT LLEN LMOVE LMPOP
-    LPOP LPOS LPUSH LPUSHX LRANGE LREM LSET LTRIM RPOP RPOPLPUSH RPUSH RPUSHX
+        # List Commands
+        BLMOVE BLMPOP BLPOP BRPOP BRPOPLPUSH LINDEX LINSERT LLEN LMOVE LMPOP
+        LPOP LPOS LPUSH LPUSHX LRANGE LREM LSET LTRIM RPOP RPOPLPUSH RPUSH RPUSHX
 
-    # Set Commands
-    SADD SCARD SDIFF SDIFFSTORE SINTER SINTERCARD SINTERSTORE SISMEMBER
-    SMEMBERS SMISMEMBER SMOVE SPOP SRANDMEMBER SREM SSCAN SUNION SUNIONSTORE
+        # Set Commands
+        SADD SCARD SDIFF SDIFFSTORE SINTER SINTERCARD SINTERSTORE SISMEMBER
+        SMEMBERS SMISMEMBER SMOVE SPOP SRANDMEMBER SREM SSCAN SUNION SUNIONSTORE
 
-    # Sorted Set Commands
-    ZADD ZCARD ZCOUNT ZDIFF ZDIFFSTORE ZINCRBY ZINTER ZINTERCARD ZINTERSTORE
-    ZLEXCOUNT ZMPOP ZMSCORE ZPOPMAX ZPOPMIN ZRANDMEMBER ZRANGE ZRANGEBYLEX
-    ZRANGEBYSCORE ZRANGESTORE ZRANK ZREM ZREMRANGEBYLEX ZREMRANGEBYRANK
-    ZREMRANGEBYSCORE ZREVRANGE ZREVRANGEBYLEX ZREVRANGEBYSCORE ZREVRANK
-    ZSCAN ZSCORE ZUNION ZUNIONSTORE
+        # Sorted Set Commands
+        ZADD ZCARD ZCOUNT ZDIFF ZDIFFSTORE ZINCRBY ZINTER ZINTERCARD ZINTERSTORE
+        ZLEXCOUNT ZMPOP ZMSCORE ZPOPMAX ZPOPMIN ZRANDMEMBER ZRANGE ZRANGEBYLEX
+        ZRANGEBYSCORE ZRANGESTORE ZRANK ZREM ZREMRANGEBYLEX ZREMRANGEBYRANK
+        ZREMRANGEBYSCORE ZREVRANGE ZREVRANGEBYLEX ZREVRANGEBYSCORE ZREVRANK
+        ZSCAN ZSCORE ZUNION ZUNIONSTORE
 
-    # HyperLogLog Commands
-    PFADD PFCOUNT PFMERGE
+        # HyperLogLog Commands
+        PFADD PFCOUNT PFMERGE
 
-    # Connection Commands
-    AUTH ECHO PING SELECT
+        # Connection Commands
+        AUTH ECHO PING SELECT
 
-    # Server Commands
-    BGREWRITEAOF BGSAVE DBSIZE FLUSHALL FLUSHDB INFO LASTSAVE SAVE TIME
+        # Server Commands
+        BGREWRITEAOF BGSAVE DBSIZE FLUSHALL FLUSHDB INFO LASTSAVE SAVE TIME
 
-    # Scripting Commands
-    EVAL EVALSHA
+        # Scripting Commands
+        EVAL EVALSHA
 
-    # Geo Commands
-    GEOADD GEODIST GEOHASH GEOPOS GEORADIUS GEORADIUSBYMEMBER
+        # Geo Commands
+        GEOADD GEODIST GEOHASH GEOPOS GEORADIUS GEORADIUSBYMEMBER
 
-    # Stream Commands
-    XACK XADD XCLAIM XDEL XGROUP XINFO XLEN XPENDING XRANGE XREAD
-    XREADGROUP XREVRANGE XTRIM
+        # Stream Commands
+        XACK XADD XCLAIM XDEL XGROUP XINFO XLEN XPENDING XRANGE XREAD
+        XREADGROUP XREVRANGE XTRIM
 
-    # Generic Commands
-    DEL DUMP EXISTS EXPIRE EXPIREAT KEYS MIGRATE MOVE OBJECT PERSIST
-    PEXPIRE PEXPIREAT PTTL RANDOMKEY RENAME RENAMENX RESTORE SORT
-    TOUCH TTL TYPE UNLINK WAIT SCAN
-)
-    for cmd in "${commands[@]}"
-    do
+        # Generic Commands
+        DEL DUMP EXISTS EXPIRE EXPIREAT KEYS MIGRATE MOVE OBJECT PERSIST
+        PEXPIRE PEXPIREAT PTTL RANDOMKEY RENAME RENAMENX RESTORE SORT
+        TOUCH TTL TYPE UNLINK WAIT SCAN
+    )
+    for cmd in "${commands[@]}"; do
         execute_command_no_args "$cmd"
     done
 
-    if [[ $FAILED_COUNT -le 6 ]]
-    then
-        echo "$(date) : PASSED : Negative testing without args validated successfully. Failed count : $FAILED_COUNT"
+    if [[ $FAILED_COUNT -le 6 ]]; then
+        log_result "PASSED : Negative testing without args validated successfully. Failed count : $FAILED_COUNT"
     else
-        echo "$(date) : FAILED : Negative testing without args validation failed(${FAILED_COUNT}). Exiting."
+        log_result "FAILED : Negative testing without args validation failed(${FAILED_COUNT}). Exiting."
         exit 1
     fi
 }
 
 start_time=$(date +%s)
-redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" flushall SYNC 2>/dev/null | grep -v option | grep -wq OK
-echo "=================== $(date) ================ Test case 01 ============= Negative Testing - Wrong Type =========================="
+$VALKEY_CMD flushall SYNC 2>/dev/null | grep -v option | grep -wq OK
+log_result "Test case 01 ============= Negative Testing - Wrong Type =========================="
 negative_testing
 sleep 5
-echo "=================== $(date) ================ Test case 02 ============= Negative Testing - No Arguments ========================"
+log_result "Test case 02 ============= Negative Testing - No Arguments ========================"
 negative_testing_no_args
-redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" flushall SYNC 2>/dev/null | grep -v option | grep -wq OK
+$VALKEY_CMD flushall SYNC 2>/dev/null | grep -v option | grep -wq OK

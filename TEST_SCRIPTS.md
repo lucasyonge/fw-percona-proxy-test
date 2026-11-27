@@ -3,238 +3,101 @@
 This page describes every script in the repository: what it tests, how to run it, and how it reports pass/fail. For setup and an overview, see the [README](README.md).
 
 | Script | Type | Summary |
-|---|---|---|
-| [`envoy_commands_sanity.sh`](#envoy_commands_sanitysh) | Functional | Positive checks for set, sorted-set, list/blocking, script, cluster, string, stream, hash and misc commands, run from a k8s pod via the proxy |
-| [`envoy_commands_sanity_valkey8.sh`](#envoy_commands_sanity_valkey8sh) | Functional | Valkey 8 variant of the sanity suite |
-| [`pubsub_commands.sh`](#pubsub_commandssh) / [`_valkey8`](#pubsub_commands_valkey8sh) | Functional | SUBSCRIBE / PSUBSCRIBE / PUBLISH / PUBSUB introspection through the proxy |
-| [`transaction_commands.sh`](#transaction_commandssh) / [`_valkey8`](#transaction_commands_valkey8sh) | Functional | Commands wrapped in MULTI/EXEC through the proxy |
-| [`negative_testing_envoy_commands.sh`](#negative_testing_envoy_commandssh) / [`_valkey8`](#negative_testing_envoy_commands_valkey8sh) | Negative | Unsupported/invalid commands and auth errors must return the expected error |
+| --- | --- | --- |
+| [`commands_sanity.sh`](#commands_sanitysh) | Functional | General Valkey command checks, including blocking operations, scripting, streams, and cluster commands |
+| [`commands_sanity_valkey8.sh`](#commands_sanity_valkey8sh) | Functional | Standalone checks for Valkey 8 features and error replies |
+| [`pubsub_commands.sh`](#pubsub_commandssh) | Functional | Publish counts, channel and pattern subscriptions, and PUBSUB introspection |
+| [`pubsub_commands_valkey8.sh`](#pubsub_commands_valkey8sh) | Functional | CSV-driven pub/sub and client-command cases |
+| [`transaction_commands.sh`](#transaction_commandssh) / [`transaction_commands_valkey8.sh`](#transaction_commands_valkey8sh) | Functional | Commands wrapped in MULTI/EXEC |
+| [`negative_testing_commands_valkey8.sh`](#negative_testing_commands_valkey8sh) | Negative | Authentication, wrong-type operations, and malformed commands |
+| [`k8s/build-valkey-proxy.sh`](#deploy-valkey-proxy-on-kind) | Setup | Builds the Valkey Proxy image and deploys it to a kind cluster |
 | [`valgrind-memory-leak-scripts/*`](#valgrind-memory-leak-scripts) | Memory | Workloads against Envoy running under Valgrind |
 | [`address-sanitiser-scripts/*`](#address-sanitiser-scripts) | Memory | Workloads against an ASan-instrumented Envoy build |
 | [`endurance-test-scripts/*`](#endurance-test-scripts) | Endurance | Long-running benchmark, pub/sub churn, streams and periodic client kills |
 
-## envoy_commands_sanity/ — command sanity suites
+## `commands_sanity/`
 
-### `envoy_commands_sanity.sh`
+All seven scripts invoke `valkey-cli` from the local shell. Install Bash and `valkey-cli`, then use the connection variables listed below. Environment variables replace the former Kubernetes config file. The two command sanity scripts use `PROXY_*` variables. The pub/sub, transaction, and negative scripts use `VALKEY_*` variables. Run the examples from the repository root.
 
-- **Purpose**: An end-to-end positive check of Redis commands sent through the Envoy `redis_proxy` filter to a Redis Cluster backend. Each command is run with `redis-cli -c` against the proxy and the reply is compared with a known expected value.
+**Use a disposable test endpoint.** The general, Valkey 8 feature, transaction, and negative scripts issue `FLUSHALL`. Some pub/sub and feature checks also terminate client connections.
 
-- **What it tests** (in run order; each "Test case NN" banner is printed before its block). Later blocks reuse keys created by earlier ones (for example, BZPOPMIN/BZPOPMAX pop from the sorted set built in 02), so run the whole script rather than single functions:
-  - **01 Sets**: SADD, DEL, SMEMBERS, SUNION, SUNIONSTORE, SINTER, SINTERSTORE, SDIFF, SDIFFSTORE, SISMEMBER, SMISMEMBER. All keys share the `{set}` hash tag.
-  - **02 Sorted sets**: ZADD, DEL, ZRANGE ... WITHSCORES, ZUNION, ZUNIONSTORE, ZINTER, ZINTERSTORE, ZDIFF, ZDIFFSTORE, ZRANDMEMBER (with and without count), ZRANGESTORE, ZMSCORE.
-  - **03 Lists / blocking**:
-    - Basic list commands: DEL, LPUSH, RPUSH, LRANGE, BLPOP, BRPOP. BLPOP/BRPOP first pop from a non-empty list with timeout `0`, then run with a 5 s timeout on an empty list, which must return `nil`.
-    - Blocking pops and moves: BZPOPMIN, BZPOPMAX (timeout 3), BRPOPLPUSH, BLMOVE with all four LEFT/RIGHT combinations.
-    - SORT ... ALPHA (ascending and DESC).
-    - LPOS: plain, with RANK, with COUNT, and with COUNT + RANK.
-    - Wait-forever check: BLPOP, BRPOP, BZPOPMIN, BZPOPMAX, BLMOVE and BRPOPLPUSH are each run with timeout `0` on an empty key. They must still be blocked when a local `timeout --kill-after=1s 10s` kills them (exit code 124 or 137). A matching "timeout 5 must not wait forever" variant is commented out.
-  - **04 Script / client / select**:
-    - SELECT 0 must return OK. SELECT 1 must fail with `SELECT is not allowed in cluster mode`.
-    - CLIENT SETNAME with no argument must not return OK.
-    - SCRIPT LOAD must return 40-character SHAs, followed by EVALSHA (ARGV[1], then KEYS[1]), SCRIPT EXISTS before and after, and SCRIPT FLUSH SYNC. If SHA generation fails, the EVALSHA checks are skipped.
-  - **05 Cluster**:
-    - CLUSTER KEYSLOT: `{test}1` and `{test}2` must both map to slot 6918.
-    - CLUSTER SLOTS: the slot ranges must add up to 16384 and the highest slot must be 16383.
-  - **06 Strings**: SET, SUBSTR, GETRANGE (with negative and positive ranges), DEL, RENAMENX, MGET.
-  - **07 Streams**:
-    - Basic stream commands: XADD, XRANGE, XTRIM MAXLEN, XDEL, XINFO STREAM (length must be 2, last-entry must match the newest ID).
-    - Consumer groups: XGROUP CREATE, CREATECONSUMER (a duplicate must not return 1), DELCONSUMER, SETID and DESTROY (a second destroy must not return 1), XINFO GROUPS, XINFO CONSUMERS, XREADGROUP (`>` read twice; the second read must be empty).
-    - Blocking read: DEL, XADD, XLEN, XRANGE ... COUNT 1 as pre-checks, then XREAD BLOCK 5 (milliseconds) from ID `0`, which must succeed, then XREAD BLOCK 0 on `$`, which must block until the local 10 s timeout kills it.
-  - **08 Default / connection**:
-    - PING must return PONG.
-    - TIME is read, then the script sleeps 2 s; the local clock minus the server time must be between 2 and 4 s.
-    - QUIT and EXIT must both reply `OK`.
-  - **09 Hashes**: DEL, HSET (return counts 2 and then 1), HMSET, HRANDFIELD (single, with count, and WITHVALUES).
-  - **11 Other**:
-    - FLUSHALL SYNC, with XADD and SCAN 0 checked before and after (key present, then gone).
-    - GETEX ... EX 10 (the key must be gone after a 10 s sleep), GETDEL, MSETNX (all keys new vs. some keys already set), EXISTS (multi-key count), DEL (multi-key count).
-    - MSET, then COPY with and without REPLACE.
-    - SCAN positive cases (after another FLUSHALL SYNC and 20 SETs): TYPE, COUNT and MATCH in different argument orders. Each must return 5 or fewer matching keys.
-    - SCAN negative cases: cursors `-1`, `a`, `1.5` and an oversized number must return `ERR invalid cursor`. An unknown TYPE and a MATCH with no hits must return an empty result.
-  - **Present but disabled** (commented out in the script):
-    - Test case 10 Bitwise (BITOP AND/OR/XOR/NOT).
-    - `slowlog_command` (SLOWLOG GET/RESET/LEN, plus a slow Lua script loaded with SCRIPT LOAD/EVALSHA to generate entries).
-    - `info_and_config_commands` (INFO, which expects `maxmemory_policy:noeviction`; INFO replication; CONFIG RESETSTAT/GET/SET maxmemory).
-    - `xrange_xrevrange` (XADD, XRANGE, XREVRANGE) and `xclaim_xack_xautoclaim` (XREADGROUP, XACK only; despite the name, there is no XCLAIM or XAUTOCLAIM call).
+### `commands_sanity.sh`
 
-- **How it runs**:
-  - The script runs no Redis client locally. It drives `redis-cli` inside a Kubernetes pod through `kubectl exec -it <POD_NAME> -n <TENANT_NAME> -- redis-cli -c -h <PROXY_HOST> -p <PROXY_PORT> -a <REDIS_PWD> ...`.
-  - Configuration is read only from `./test_params_envoy.cfg` in the current working directory. The script exits with code 1 if that file is missing, and also exits with an error if `POD_NAME` is empty or unset (`${POD_NAME:?...}`). There are no CLI arguments. The config file is sourced, so its values override any same-named environment variables.
-  - `PROXY_HOST` is not a config value. The script derives it from the external-dns hostname annotation on the proxy Service: `kubectl describe service ${PROXY_SERVICE} --namespace ${TENANT_NAME} | grep external-dns | grep hostname | awk '{print $NF}'`.
-  - Prerequisites:
-    - `bash`, plus standard `awk`, `sed`, `grep`/`egrep`, `date`.
-    - `kubectl` with access to the namespace.
-    - A pod in that namespace whose image includes `redis-cli`.
-    - GNU `timeout` (coreutils) on the machine running the script; it must support `--kill-after`.
-    - An interactive terminal: the checks rely on the TTY-formatted `redis-cli` output (see Notes).
-    - The proxy reachable from that pod, in front of a Redis Cluster.
-  - Example:
-    ```bash
-    cd envoy_commands_sanity
-    # fill in test_params_envoy.cfg first
-    ./envoy_commands_sanity.sh 2>&1 | tee sanity.log
-    ```
+This suite connects with `valkey-cli -c --raw`. `PROXY_HOST` defaults to `localhost` and `PROXY_PORT` to `7777`. The cluster cases expect a cluster-aware endpoint. Install a `timeout` that supports `--kill-after`, such as GNU coreutils `timeout`.
 
-- **Pass/fail & output**:
-  - Each check prints a timestamped `PASSED`, `FAILED`, `INFO` or `ERROR` line to stdout. The CLUSTER SLOTS check also prints `DEBUG` lines, and many steps print the raw command output (set, list and zset contents).
-  - The first fatal failure ends the run with `exit 1`. Most fatal failures print the elapsed time first; the setup failures in 01–03 (creating the sample sets, sorted sets and lists) exit without it.
-  - A full run ends with `FLUSHALL SYNC` and `Total script execution time is (HH:MM:SS) - ...` and exits 0.
-  - There are no pass/fail counters and no summary table.
-  - Some failures only print `FAILED`/`ERROR` and do not stop the run: SORT DESC, CLIENT SETNAME, SHA generation, SCRIPT EXISTS (before and after flush), the stream deletion after the XREAD test, MSETNX on new keys, the SCAN positive cases, and INFO replication (disabled block).
-  - A temporary file `./test_block_cmd.log` is created during the BLPOP/BRPOP timeout test and deleted when that test passes. It is left behind if the test fails.
+```bash
+PROXY_HOST=localhost PROXY_PORT=7777 ./commands_sanity/commands_sanity.sh
+```
 
-- **Notes / caveats**:
-  - **Destructive**: the script runs `FLUSHALL SYNC` at the start, three times during Test case 11, and at the end. Use a throwaway cluster.
-  - **Needs a TTY**: commands run through `kubectl exec -it`, and many checks grep for `redis-cli`'s human-readable formatting (`(integer)`, `(nil)`, `(empty array)`, quoted strings). Running without a terminal on stdin (for example from cron or CI) changes the output and causes false failures. `grep -v option` is used everywhere to drop the `redis-cli` "-a password" warning, which the TTY merges into stdout.
-  - If the proxy Service has no external-dns hostname annotation, `PROXY_HOST` ends up empty and every command fails. In that case, edit the `PROXY_HOST=` line to point at your proxy address.
-  - `REDIS_PWD` is passed with `-a` and is effectively required. With an empty password, `-a` swallows the next argument, so no-auth setups need a script edit.
-  - Some expectations are hard-coded to specific server and proxy behaviour:
-    - The exact SELECT error text.
-    - QUIT and EXIT both returning `OK`.
-    - CLUSTER SLOTS output parsed by taking the last field of every line that does not contain `6379`. This assumes the backend nodes listen on 6379 and depends on the exact reply shape the proxy returns.
-    - TIME compared with the local clock, so clock skew causes a failure.
-  - Several checks are loose:
-    - XADD and XTRIM only match `.*sensor.*`.
-    - The XDEL check passes an empty pattern, so it always passes and does not verify deletion. The XINFO STREAM check that follows expects a length of 2, which assumes the earlier entry is still present.
-    - The ID check in `validate_blocking_command` is an unquoted `grep 17*`, which matches any output containing a `1`.
-    - The MSETNX "some keys already set" check tests the exit status of a `... | wc -l` assignment, so it always passes.
-  - In `info_and_config_commands` (disabled), `${INFO}` is printed but never defined.
-  - After the ZDIFFSTORE check passes, the script displays `{zset}.zinter` instead of `{zset}.zdiff`, and its failure message says `zinterstore`. This is cosmetic.
-  - The run includes a 2 s sleep for TIME, a 10 s sleep for GETEX, two 5 s BLPOP/BRPOP timeouts and seven 10 s `timeout` waits for blocking commands, on top of one `kubectl exec` per command, so expect it to take a few minutes.
+| Case | Coverage |
+| --- | --- |
+| 01–02 | Set and sorted-set operations, including union, intersection, and difference. |
+| 03 | List and sorted-set pops, `BRPOPLPUSH`, `BLMOVE`, `SORT`, and `LPOS`. Empty-list `BLPOP` and `BRPOP` checks look for a blank raw reply after the server timeout. Six blocking commands with a server timeout of `0` must keep waiting until the local 10-second timeout stops the client. |
+| 04 | `SELECT 0`, missing arguments to `CLIENT SETNAME`, and `SCRIPT LOAD`, `EVALSHA`, `SCRIPT EXISTS`, and `SCRIPT FLUSH SYNC`. |
+| 05 | `CLUSTER KEYSLOT` expects slot 6918 for both `{test}1` and `{test}2`. `CLUSTER SLOTS` is parsed from CSV output and the slot ranges must total 16384. |
+| 06–09 | String operations, streams and consumer groups, `PING`/`TIME`/`QUIT`/`EXIT`, and hashes. The blocking stream test attempts both a short read and a read that waits for the local timeout. |
+| 11 | `FLUSHALL`, `GETEX` expiration, `GETDEL`, `MSETNX`, `EXISTS`, `DEL`, `COPY`, and `SCAN`. Positive `SCAN` checks require at least one matching key. Invalid cursor values must return `ERR invalid cursor`. |
 
-### `envoy_commands_sanity_valkey8.sh`
+Run the full suite in order because some groups reuse data created earlier. The bitwise group, SLOWLOG checks, and INFO/CONFIG checks are disabled in the script.
 
-- **Purpose**: The same suite as `envoy_commands_sanity.sh`, adapted for a Valkey 8 backend. It adds a block of Valkey 8 features and breaking-change checks, and relaxes two SCAN expectations.
+The script prints timestamped `INFO`, `PASSED`, `FAILED`, `ERROR`, and `DEBUG` messages. `EXIT_ON_ERROR` is set to `0` in the script, so inspect the log for failures even when the run reaches the elapsed-time line. The BLPOP/BRPOP timeout checks use `./test_block_cmd.log` and delete it when the check passes.
 
-- **What it tests (differences from the base script)**:
-  - **New Test case 12 "Valkey 8 New Features"** (`valkey8_new_features`), run after Test case 11 and before the final `FLUSHALL SYNC`:
-    - **SET ... IFEQ**:
-      - An initial `SET k v1` must return OK.
-      - `SET k v2 IFEQ v1` must return OK.
-      - `SET k v3 IFEQ v1` must return `nil`.
-      - The value must still be `v2` afterwards.
-    - **Nested transactions**: each case is sent as a heredoc into one `redis-cli` session (`kubectl exec -i`, no TTY). Lines containing `Defaulted container`, `option` or `Warning` are filtered out.
-      - `MULTI; MULTI; DISCARD` must return `MULTI calls can not be nested`.
-      - `MULTI; WATCH k; DISCARD` must return `ERR Command not allowed inside a transaction`.
-    - **SCAN 0 TYPE faketype** must return `ERR unknown type name`.
-    - **BITPOS / BITCOUNT argument errors** (on a deleted key):
-      - `BITPOS k 0 0 1 hello` must return `ERR syntax error`.
-      - `BITCOUNT k 0 asd` and `BITCOUNT nokey invalid1 invalid2` must return `ERR value is not an integer or out of range`. The second case checks that arguments are validated before the key's existence.
-    - **BGSAVE CANCEL**, **CLIENT KILL MAXAGE 3600**: informational only; these never fail the run.
-    - **CLIENT LIST SKIPME YES** and **CLIENT LIST MAXAGE 60**: each fails only if the command produces no output.
-    - All Test case 12 checks except BGSAVE CANCEL and CLIENT KILL MAXAGE are fatal (`exit 1`).
-  - **SCAN changes in `copy_and_scan_commands`**:
-    - The positive cases now require more than 0 matching keys, instead of 5 or fewer, because COUNT is only a hint. They are still non-fatal.
-    - The negative case with an unknown TYPE now accepts either an empty result or `ERR unknown type name`.
-  - Everything else is the same as the base script: connection, config file, the other test cases, the disabled blocks and the output format.
+### `commands_sanity_valkey8.sh`
 
-- **How it runs**: Same as the base script: same `./test_params_envoy.cfg`, same prerequisites (including the TTY). The backend must be a Valkey version that supports the commands and options used. The file is not marked executable, so run it with bash:
-  ```bash
-  bash envoy_commands_sanity_valkey8.sh 2>&1 | tee sanity_valkey8.log
-  ```
+This standalone suite runs the Valkey 8 feature and error checks. The host is fixed to `localhost`, and `PROXY_PORT` defaults to `7777`. Point it at an endpoint that supports the commands and options below.
 
-- **Pass/fail & output**: Same as the base script: the run stops with `exit 1` at the first fatal failure, and a full run ends with `FLUSHALL SYNC` and the total execution time.
+```bash
+PROXY_PORT=7777 ./commands_sanity/commands_sanity_valkey8.sh
+```
 
-- **Notes / caveats**:
-  - The BGSAVE CANCEL "pass" depends only on the exit status of `grep -v option`, so it passes whenever any output comes back. It does not show that the command is supported.
-  - The CLIENT LIST SKIPME/MAXAGE checks also pass on any output, including an error reply, so they do not show that the filters are supported either.
-  - CLIENT KILL MAXAGE 3600 really disconnects clients connected for more than an hour on whichever node or proxy handles it. Avoid running it next to long-lived clients.
-  - The nested MULTI/WATCH checks open their own `kubectl exec` session. They expect transactions to be handled within a single connection through the proxy.
-  - SET ... IFEQ is not available in every Valkey 8 release (it was added in 8.1). On a server without it, Test case 12 fails at its first check.
+- `SET ... IFEQ` tests a matching and nonmatching update, then verifies that the stored value is still `v2`.
+- Nested `MULTI` and `WATCH` inside `MULTI` each use one local CLI session. The checks look for `MULTI calls can not be nested` and `ERR WATCH inside MULTI is not allowed`, respectively.
+- `SCAN 0 TYPE faketype` expects `ERR unknown type name`. The `BITPOS` and `BITCOUNT` cases check invalid arguments on nonexistent keys.
+- Server and client checks cover `BGSAVE CANCEL`, `CLIENT KILL MAXAGE 3600`, and the `CLIENT LIST` filters `SKIPME YES` and `MAXAGE 60`. `CLIENT KILL` can disconnect other clients.
 
-### `test_params_envoy.cfg`
-
-- **Purpose**: A shell fragment that both sanity scripts `source` from the current directory. It ships with placeholder values that you replace with your own.
-
-- **Contents** (all required; there are no defaults in the scripts, and only `POD_NAME` is explicitly checked):
-
-  | Variable | Meaning |
-  |---|---|
-  | `TENANT_NAME` | Kubernetes namespace that holds the test pod and the proxy Service |
-  | `POD_NAME` | Pod used to run `redis-cli` against the proxy (`kubectl exec`) |
-  | `PROXY_SERVICE` | Kubernetes Service in front of the Envoy proxy; its external-dns hostname annotation becomes `PROXY_HOST` |
-  | `PROXY_PORT` | Port the proxy listens on |
-  | `REDIS_PWD` | Password passed to `redis-cli -a` |
-
-- **Notes / caveats**:
-  - The file is sourced as bash, so keep the `KEY="value"` syntax. `PROXY_PORT` is unquoted in the template.
-  - It holds a plaintext password. Don't commit real values.
-
----
-
-## envoy_commands_sanity/ — pub/sub, transaction and negative tests
-
-All six scripts are standalone Bash scripts that run `redis-cli` from the local machine straight against the proxy endpoint. They do **not** read `test_params_envoy.cfg` and do not use `kubectl`. They all share the same connection settings:
-
-| Env var | Default | Notes |
-|---|---|---|
-| `REDIS_HOST` | none (required) | Proxy host. The script aborts if it is unset or empty. |
-| `REDIS_PORT` | `6379` | Proxy port. |
-| `REDIS_PASSWORD` | none (required) | Password passed to `redis-cli -a`. The script aborts if it is unset or empty. |
-
-The expected results assume a **Redis Cluster / Valkey cluster backend behind the Envoy `redis_proxy` filter**. They use `{hash-tag}` keys, and they expect `CROSSSLOT` errors, Envoy's `invalid request` / `unsupported command` replies and the proxy's "`'X' command is not supported within transaction`" rejections.
-
----
+The script flushes at startup and again after the checks complete. The invalid `SCAN` type, `BGSAVE CANCEL`, and `CLIENT KILL` checks can log failures and continue. Other failed checks can exit with code 1. A full run prints elapsed time.
 
 ### `pubsub_commands.sh`
 
-**Purpose**: A functional check of pub/sub through the proxy. It runs background subscribers, publishes messages and checks the `PUBSUB` introspection counters.
+`VALKEY_HOST` defaults to `localhost` and `VALKEY_PORT` to `7777`. The script adds the `-a` option when `VALKEY_PASSWORD` is nonempty. It requires `timeout`.
 
-**What it tests** (channel `test_channel_100`):
-- Introspection: `PUBSUB NUMSUB` (expects 0, 0 again after the first subscriber is killed, then 1 while a subscriber is active), `PUBSUB NUMPAT` (expects 0, 0, then 1 while a pattern subscriber is active), `PUBSUB CHANNELS` (the channel must be listed while a subscriber is active).
-- Publish: `PUBLISH` with no subscribers (expects `0`) and with one subscriber (expects `1`).
-- Subscribe: `SUBSCRIBE` (subscribe confirmation `subscribe / <channel> / 1`, then receipt of `message / <channel> / Hello`), `PSUBSCRIBE test_channel_100*` (confirmation `psubscribe / <pattern> / 1`).
-- Unsubscribe: `UNSUBSCRIBE` outside subscribe mode (expects zero output lines matching the channel, `unsubscribe` or `0`). A second check is labelled "PUNSUBSCRIBE".
+```bash
+VALKEY_HOST=localhost VALKEY_PORT=7777 ./commands_sanity/pubsub_commands.sh
+```
 
-**How it runs**:
-- Prerequisites: `bash`, `redis-cli`, and standard `ps`/`awk`/`sed`/`grep`/`egrep`/`xargs`/`tail`/`tr`. Subscribers run as background `redis-cli` processes on the same host. Each subscriber step waits 5 s (`sleep 5`) and then stops the subscribers with `kill -9` (`kill_clients`, also run once at startup).
-- Writes subscriber output to `./subscriber_output.log` in the current directory and deletes it at the end.
-- Example:
-  ```bash
-  REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PASSWORD=secret ./pubsub_commands.sh
-  ```
+- Publishes `Hello` to `test_channel_100` and expects counts of `0` without a subscriber and `1` with a subscriber. It checks `PUBSUB NUMSUB`, `NUMPAT`, and `CHANNELS`.
+- Checks the acknowledgments for `SUBSCRIBE` and `PSUBSCRIBE` using five-second invocations and raw output with literal `\n` separators. Background subscribers used for publish and channel-list checks have a 15-second timeout.
+- The check labelled `PUNSUBSCRIBE` currently repeats `UNSUBSCRIBE test_channel_100`.
+- Cleanup checks `CLIENT LIST` for `cmd=subscribe`. If it finds an active subscriber, it can kill local processes whose command lines match `subscribe` and `VALKEY_HOST`, including processes started outside the script.
 
-**Pass/fail & output**:
-- Each check prints a timestamped `PASSED : ✅ ...` or `FAILED : ❌ ...` line with the expected and actual values. The numsub/numpat checks print `INFO : ... validation succeeded` or `FAILED : ... validation failed`.
-- There are no counters, no summary and no failure exit code: the script always ends normally. Search the output for `FAILED` to find problems.
-
-**Notes / caveats**:
-- `kill_clients` kills **every** local process whose `ps -aef` line contains "subscribe" (case-insensitive) and `$REDIS_HOST`. It is not limited to processes this script started.
-- The check labelled "PUNSUBSCRIBE" actually sends `unsubscribe test_channel_100`. `PUNSUBSCRIBE` is never sent.
-- All three log-based checks (both SUBSCRIBE checks and the PSUBSCRIBE check) read the log only *after* `kill -9`. Subscriber output goes through a pipe (`redis-cli | grep -v option > file`), so it may not have been flushed yet when `tail` runs, which can make these checks flaky. The `_valkey8` variant addresses this.
-- If `PUBSUB NUMSUB`/`NUMPAT` returns nothing or a non-numeric reply, the unquoted `[ ... -eq ... ]` test prints a shell error (e.g. `unary operator expected` / `integer expression expected`) and then falls into the FAILED branch.
-
----
+The script prints expected and actual values on failures. Use the `FAILED` lines to determine which checks failed.
 
 ### `pubsub_commands_valkey8.sh`
 
-**Purpose**: The same pub/sub flow, adapted for Valkey 8 backends, plus several Valkey 8 `CLIENT` command checks.
+This runner uses the same connection variables as `pubsub_commands.sh` and requires `timeout` and `stdbuf` for timed subscriptions. It reads [`pubsub_commands_valkey8.csv`](commands_sanity/data/pubsub_commands_valkey8.csv) relative to the script.
 
-**Differences from `pubsub_commands.sh`**:
-- The channel is `{channel}test_pubsub` (hash-tagged) instead of `test_channel_100`.
-- `redis-cli` is called with `--no-auth-warning`. stderr is merged into stdout (`2>&1`) and `Warning:` lines are filtered out, so error replies now appear in the results.
-- Background subscribers run through `stdbuf -oL -eL redis-cli ...` (line-buffered output, not piped through `grep`). Each subscriber log is deleted before the step and read **before** the subscribers are killed (first 3 non-empty lines for subscribe/psubscribe confirmations, last 3 non-empty lines for the message). There is an extra `sleep 1` after `PUBLISH`.
-- `PUBLISH` replies are parsed by stripping every non-digit character.
-- **ACL pre-check**: after the initial `kill_clients`, the script sends `PUBLISH <channel> test`. If the reply contains `NOPERM`, it prints a WARNING block, skips all pub/sub tests, runs only the Valkey 8 tests below and exits with `0`.
-- Additional Valkey 8 tests, run at the end (or alone in the NOPERM case):
-  - `UNSUBSCRIBE <channel>_test` and `PUNSUBSCRIBE <channel>_test*` outside subscribe mode. `PUNSUBSCRIBE` is really sent here.
-  - `CLIENT LIST SKIPME YES`, `CLIENT LIST SKIPME NO`.
-  - `CLIENT KILL MAXAGE 3600`. This test never reports a failure: the "else" branch only logs INFO.
-  - `CLIENT LIST MAXAGE 60`. Also logs how many `age=` lines came back.
-- Example: `REDIS_HOST=... REDIS_PASSWORD=... bash pubsub_commands_valkey8.sh`. The file is not marked executable.
+```bash
+VALKEY_HOST=localhost VALKEY_PORT=7777 ./commands_sanity/pubsub_commands_valkey8.sh
+```
 
-**Notes / caveats**:
-- Requires `stdbuf` (GNU coreutils). It is not available by default on macOS, where coreutils provides it as `gstdbuf`. Without it, the subscriber logs only contain a "command not found" error and the subscribe checks fail.
-- The Valkey 8 checks decide pass/fail from `$?` of `result=$(redis_cmd ...)`. That is the exit status of the trailing `grep -v "Warning:"`, so any non-empty reply passes, **including error replies**; only an empty reply fails.
-- The "PUNSUBSCRIBE" step in the main flow still sends `unsubscribe`, as in the base script. The same `kill_clients` caveat also applies.
+Each pipe-delimited row contains `command | expected reply | check exit status | ignore`. A third column of `1` checks the CLI exit status. Other values compare the raw reply with the expected text, using literal `\n` separators. A fourth column of `1` skips the row. Lines beginning with `#` are ignored.
 
----
+The shipped rows cover `UNSUBSCRIBE`, `PUNSUBSCRIBE`, `CLIENT LIST` filters, `CLIENT KILL MAXAGE 3600`, `PUBSUB NUMSUB` and `NUMPAT`, `PUBLISH` with no subscribers, and the `SUBSCRIBE` acknowledgment. The runner bounds the uppercase `SUBSCRIBE` row with a five-second `timeout` and uses `stdbuf` to line-buffer the reply. Review the per-row `PASSED` or `FAILED` messages. Failures are logged without an aggregate failure exit status.
 
 ### `transaction_commands.sh`
 
-**Purpose**: Wraps each of 274 commands in its own `MULTI` / `<command>` / `EXEC` block sent through the proxy. It compares each `EXEC` result with a hard-coded expected value to check how the proxy handles transactions.
+The runner loads [`transaction_commands.csv`](commands_sanity/data/transaction_commands.csv) and sends each enabled command in a separate `MULTI` / command / `EXEC` session. Each pipe-delimited row contains the command, expected result, and optional ignore flag. A third field of `1` skips the row. Cases run in file order and can depend on keys created earlier. The expected replies include cluster errors and proxy-specific transaction rejections.
 
-**What it tests** (one transaction per entry, in a fixed order; the cases build on each other's state):
+Set `VALKEY_HOST` explicitly. `VALKEY_PORT` defaults to `6379`. Set `VALKEY_PASSWORD` for an authenticated endpoint. Use a Bash version with `readarray`.
+
+```bash
+VALKEY_HOST=localhost VALKEY_PORT=7777 ./commands_sanity/transaction_commands.sh
+```
+
+The runner issues `FLUSHALL` and loads a small SET/GET Lua script before the sweep. It normalizes replies before comparing them with the fixture, including flattening multiline output into literal `\n` separators and applying command-specific handling for replies such as stream IDs and TTLs.
+
+**Command coverage**
+
 - Strings: SET, GET, APPEND, STRLEN, SETEX, PSETEX, TTL, PTTL, SETNX, MSETNX (a cross-slot case that expects `CROSSSLOT` + `EXECABORT`, and a hash-tagged case), MSET, MGET, SETRANGE, GETRANGE, INCR, INCRBY, INCRBYFLOAT, DECR, DECRBY, SETBIT, GETBIT, BITCOUNT, BITPOS, GETSET.
 - Lists: LPUSH, RPUSH, LPUSHX, RPUSHX, LLEN, LRANGE, LPOP, RPOP, LINDEX, LSET, LREM, LTRIM, LINSERT, RPOPLPUSH, BLPOP, BRPOP (timeouts 1 and 0), BRPOPLPUSH (timeouts 0 and 1).
 - Sets: SADD, SCARD, SMEMBERS, SISMEMBER, SREM, SRANDMEMBER, SMOVE, SDIFF, SDIFFSTORE, SINTER, SINTERSTORE, SUNION, SUNIONSTORE, SPOP.
@@ -245,7 +108,7 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 - Streams: XADD (auto and explicit IDs), XLEN, XRANGE, XREVRANGE, XPENDING (before and after the group exists), XGROUP CREATE/DESTROY, XREAD, XREADGROUP, XACK, XINFO STREAM/GROUPS, XTRIM, XDEL.
 - Transaction commands nested inside the wrapper: MULTI, SET, GET, EXEC, DISCARD, WATCH, UNWATCH.
 - Scripting: EVAL; EVALSHA with an unknown SHA (expects `NOSCRIPT`) and with the SHA of the script loaded at startup (expects `hello`); SCRIPT LOAD/EXISTS/FLUSH (expected to be rejected inside a transaction).
-- Connection/server: PING, ECHO, TIME, CLIENT LIST/GETNAME/SETNAME. CONFIG GET, SLOWLOG GET and INFO are expected to be rejected inside a transaction.
+- Connection/server: PING, ECHO and TIME. The CLIENT LIST/GETNAME/SETNAME rows are marked to skip. CONFIG GET, SLOWLOG GET and INFO have fixtures for transaction rejections.
 - Keyspace: TYPE, EXISTS, DEL, UNLINK, EXPIRE, PERSIST, TTL, MOVE, RENAME, RENAMENX, SORT … ALPHA. RANDOMKEY, SCAN and KEYS are expected to be rejected inside a transaction.
 - Pub/sub: PUBLISH, PUBSUB CHANNELS, UNSUBSCRIBE and PUNSUBSCRIBE are all expected to be rejected inside a transaction. SUBSCRIBE and PSUBSCRIBE are commented out.
 - Database: SELECT 1 (expects `DB index is out of range`), SELECT 0 (expects `OK`). FLUSHDB, FLUSHALL, DBSIZE and SWAPDB are expected to be rejected inside a transaction.
@@ -254,130 +117,56 @@ The expected results assume a **Redis Cluster / Valkey cluster backend behind th
 - XREAD/XREADGROUP argument permutations: 19 XREAD and 23 XREADGROUP orderings of `BLOCK`/`COUNT`/`STREAMS`/`GROUP`/consumer (the XREAD cases include `COUNT 0` and `COUNT -1`). Depending on the ordering, the expected result is a valid read, an empty result, `ERR syntax error`, `CROSSSLOT` + `EXECABORT`, or the "Unbalanced XREAD list of streams" error.
 - COPY: `COPY {key}1 {key}2` without `REPLACE` (expects `0`) and with `REPLACE` (expects `1`), verified with MGET.
 
-**How it runs**:
-- Prerequisites: `bash`, `redis-cli`, `awk`/`sed`/`egrep`/`cut`/`tr`. No cluster mode (`-c`) is used: everything goes through the proxy.
-- At startup the script runs `FLUSHALL` and `SCRIPT LOAD` of a small SET/GET Lua script. **It wipes the target database.**
-- Each case is fed to `redis-cli` on stdin as a heredoc (`MULTI`, the command, `EXEC`). Multi-line replies (after dropping lines containing `QUEUED`/`OK`) are flattened into one string with literal `\n` separators; single-line replies drop the first two lines (the `MULTI` `OK` and `QUEUED`). Per-command parsing rules exist for XRANGE/XREAD/XREVRANGE/XINFO, ZRANGE/HGETALL/MGET/GEOPOS, SMEMBERS/SRANDMEMBER/SPOP (each line cut to 6 chars so member order does not matter), TIME, XREADGROUP, XADD, PING, TTL and PTTL.
-- Example:
-  ```bash
-  REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PASSWORD=secret ./transaction_commands.sh
-  ```
+**Reading the results**
 
-**Pass/fail & output**:
-- For each case it prints `Executing: <cmd>`, the raw `=======RESULT`, then `PASSED : ✅`, `FAILED : ❌` (with expected and actual values) or `FATAL : ❌` (if the output contains `WRONGTYPE`, `NOSCRIPT`, `NOTBUF` or `SYNTAXERR`). FATAL also counts as an error.
-- TTL/PTTL pass when the value is ≤ 10 or ≤ 10000 respectively.
-- At the end it prints a summary with the total number of commands and the number of commands with errors.
-- **Exit code**: `0` if `error_count ≤ 11`, followed by a final `FLUSHALL`. Otherwise it prints `ERROR : n/total commands failed ...` and exits with `1` (no final `FLUSHALL`, so test data is left behind).
-
-**Notes / caveats**:
-- The `commands` and `expected_results` arrays are matched **by position**. Both have 274 entries, so adding or removing an entry in only one array shifts every later expectation.
-- In `execute_redis_command`, the line `2>/dev/null | grep -v option` comes *after* the heredoc terminator. It therefore runs as a separate, empty command, and the intended stderr suppression and filtering never apply to `redis-cli` (the `-a` password warning is printed to the terminal for every case).
-- The FATAL check runs before the comparison, so the unknown-SHA `EVALSHA` case (whose expected value itself contains `NOSCRIPT`) always counts as an error.
-- XADD results are validated twice: once against `<ms>-<expected>`, then again against the bare expected value. The second comparison cannot match, so each of the 4 XADD cases adds one error.
-- The TIME check counts reply lines that start with `172` (an epoch-seconds prefix) and compares the count with an empty string, so this check cannot pass as written.
-- In the TTL/PTTL check, an empty result also evaluates as ≤ 10 inside `[[ ]]` and passes.
-- The tolerance of 11 errors suggests some expected mismatches are already accepted. Many expected strings are tied to one particular proxy and server version (error wording, `XINFO` field lists, the GEOPOS precision).
-
----
+- Matching cases are quiet. A reply containing `WRONGTYPE`, `NOSCRIPT`, `NOTBUF`, or `SYNTAXERR` is logged as `FATAL` and counted as an error. This also applies when the fixture itself expects `NOSCRIPT`.
+- An ordinary reply mismatch logs `FAILED` and triggers a bare `exit` in the validator. That can end the run before the summary with status 0.
+- If the runner reaches its summary, it reports total fixture rows, errors, and skipped rows. At most 11 counted errors take the final `FLUSHALL` path. More than 11 exits with code 1.
 
 ### `transaction_commands_valkey8.sh`
 
-**Purpose**: The same MULTI/EXEC sweep, with expectations updated for Valkey 8 backends, plus a few standalone Valkey 8 transaction checks.
+This entry point checks that [`transaction_commands_valkey8_prechecks.csv`](commands_sanity/data/transaction_commands_valkey8_prechecks.csv) is readable, then sources `transaction_commands.sh`. It uses the same connection settings, prerequisites, and reporting.
 
-**Differences from `transaction_commands.sh`**:
-- Before the main loop (after the startup FLUSHALL/SCRIPT LOAD), three extra checks run. They print PASSED/FAILED/INFO lines but **do not count toward `error_count` or the exit code**:
-  - Nested `MULTI` must fail with `MULTI calls can not be nested`. `WATCH` inside `MULTI` must fail with `ERR Command not allowed inside a transaction`.
-  - `DEL {trans}version`, then `SET {trans}version v1`, `SET … v2 IFEQ v1` and `GET` inside one transaction. The result must contain `v2`.
-  - `BITCOUNT {trans}nonexistent 0 invalid` (expects `ERR value is not an integer or out of range`) and `BITPOS {trans}nonexistent 0 0 1 hello` (expects `ERR syntax error`). When these do not match, the script only logs INFO, never FAILED.
-- Changes to the main list (273 entries):
-  - The first `CLIENT GETNAME` is removed, and `CLIENT GETNAME` after `SETNAME` now expects an empty result instead of `myclient`.
-  - `XINFO STREAM` expects the extra fields `max-deleted-entry-id`, `entries-added` and `recorded-first-entry-id`. `XINFO GROUPS` expects the extra fields `entries-read` and `lag`.
-  - Nested `WATCH` expects `ERR Command not allowed inside a transaction` + `EXECABORT`. `UNWATCH` expects "`'UNWATCH' command is not supported within transaction`".
-  - `SELECT 1` and `SELECT 0` both expect "`'SELECT' command is not supported within transaction`". `DBSIZE` and `SWAPDB` now expect an empty result.
-  - `MODULE LIST` expects an empty result instead of `(nil)`.
-  - The unbalanced XREADGROUP case expects the Valkey wording `ERR Unbalanced 'xreadgroup' list of streams: for each stream key an ID or '>' must be specified.`
-- The pass threshold (`error_count ≤ 11`), the parsing and the FLUSHALL behaviour are unchanged. The file is not marked executable, so run it with `bash transaction_commands_valkey8.sh`.
+```bash
+VALKEY_HOST=localhost VALKEY_PORT=7777 ./commands_sanity/transaction_commands_valkey8.sh
+```
 
-**Notes / caveats**:
-- The heredoc stderr/filter issue, the NOSCRIPT-always-FATAL case, the double XADD validation and the TIME check from the base script are all inherited. The extra checks use the same heredoc pattern; in the SET IFEQ check, the trailing `| tail -3` is on the same disconnected line, so it has no effect either.
-- The nested-MULTI and WATCH-inside-MULTI checks use the non-hash-tagged key `key1`; if the proxy queues the `SET`, it is actually written.
+The wrapper sets a path to [`transaction_commands_valkey8.csv`](commands_sanity/data/transaction_commands_valkey8.csv) and defines a helper for the nested `MULTI`, `WATCH`, `SET IFEQ`, `BITCOUNT`, and `BITPOS` prechecks. The shared runner reads `transaction_commands.csv` directly, and the wrapper's normal entry point leaves the precheck helper uncalled.
 
----
+### `negative_testing_commands_valkey8.sh`
 
-### `negative_testing_envoy_commands.sh`
+This is the negative suite in `commands_sanity/`. It uses `VALKEY_HOST` and `VALKEY_PORT`, which default to `localhost` and `7777`. For the authentication cases, set `VALKEY_PASSWORD` in your shell to the password for the test endpoint.
 
-**Purpose**: Sends malformed or wrong-type commands through the proxy and checks that the proxy or the backend returns the expected errors. It also checks that commands sent without arguments are rejected.
+```bash
+VALKEY_HOST=localhost VALKEY_PORT=7777 ./commands_sanity/negative_testing_commands_valkey8.sh
+```
 
-**What it tests**:
-- **Authentication** (results are only printed, not counted): `PING` without a password (expects `NOAUTH`), with a wrong password (expects `invalid password`), and with the correct password (expects `PONG`).
-- **Test case 01, wrong type / bad arguments** (counted; the setup steps such as `flushall`, `LPUSH`, `SET` and `del` are counted as tests too). The script creates a list `{negative_list}1` and a string `{negative_string}1`, then sends:
-  - Strings: APPEND, BITCOUNT, BITOP and STRLEN on a list (expect `WRONGTYPE`); DECR and INCR on a non-integer; SETBIT and GETBIT with offset -1; SETRANGE with a negative offset; GET on a missing key; GETRANGE with an inverted range.
-  - Lists: BLPOP with a negative timeout; LINDEX, LINSERT, LPOP, LPUSH, LRANGE, LSET and LTRIM on a string; RPOPLPUSH with a non-list source and/or destination.
-  - Sets: SADD, SCARD, SDIFF, SINTER, SISMEMBER, SMEMBERS, SMOVE, SPOP, SRANDMEMBER and SREM on a list.
-  - Hashes: HDEL, HEXISTS, HGET, HGETALL, HINCRBY, HKEYS, HLEN, HMGET, HMSET and HSETNX on a list.
-  - Sorted sets: ZADD, ZCARD, ZCOUNT, ZINCRBY, ZRANGE, ZRANK, ZREM, ZREVRANGE, ZSCORE and ZUNIONSTORE on a list.
-  - HyperLogLog: PFADD, PFCOUNT and PFMERGE on a list.
-  - Geo: GEOADD, GEODIST, GEOHASH, GEOPOS, GEORADIUS and GEORADIUSBYMEMBER on a list.
-  - Pub/sub: PUBLISH with a missing argument (expects a wrong-number-of-arguments error); PUBSUB with an invalid subcommand (expects `ERR Unknown subcommand or wrong number of arguments`).
-  - Transactions: EXEC without MULTI; DISCARD without MULTI; "WATCH inside MULTI".
-  - Connection: AUTH with a wrong password (expects `ERR invalid password`); ECHO without a message; SELECT 99 (expects `ERR SELECT is not allowed in cluster mode`); CLIENT SETNAME `''` (expects `OK`).
-  - Server: INFO with an invalid section (expects `ERR Invalid section`); BGSAVE and SLAVEOF (expect `unsupported command`).
-  - Scripting: EVAL with a syntax error; EVALSHA with an unknown SHA (expects `NOSCRIPT`); SCRIPT LOAD of an empty script; SCRIPT KILL when no script is running (expects `NOTBUSY`).
-  - Keys: DEL, EXPIRE, RENAME, TYPE and DUMP on a missing key.
-  - Streams: XADD, XLEN, XRANGE, XREAD, XREVRANGE, XDEL, XTRIM, XGROUP CREATE and XREADGROUP on a list.
-- **Test case 02, no arguments**: 176 commands are each sent with no arguments, and each reply must contain `invalid request` (Envoy's response to bad arity). The list covers string, hash, list, set, sorted-set, HyperLogLog, connection (AUTH, ECHO, PING, SELECT), server (BGREWRITEAOF, BGSAVE, DBSIZE, FLUSHALL, FLUSHDB, INFO, LASTSAVE, SAVE, TIME), scripting (EVAL, EVALSHA), geo, stream and generic key commands (DEL … SCAN, including MIGRATE, MOVE, OBJECT, RESTORE, SORT and WAIT).
+- **Case 01** checks authentication and runs wrong-type operations and malformed commands across strings, lists, sets, hashes, sorted sets, HyperLogLog, geospatial data, pub/sub, transactions, scripting, keys, and streams. It also checks invalid `SCAN` types and cursors and invalid `BITCOUNT`/`BITPOS` arguments. The transaction cases send nested `MULTI` and `WATCH` inside `MULTI` in separate CLI sessions.
+- **Case 02** sends a command list with no arguments. It runs a `PING` check before each command and retries every five seconds when the CLI reports a failure. Replies matching `invalid request`, `wrong number of arguments`, `ERR`, or `syntax error` pass. Commands such as `PING`, `FLUSHALL`, `FLUSHDB`, and `DBSIZE` are sent before they are reported as `SKIPPED`.
 
-**How it runs**:
-- Prerequisites: `bash` and `redis-cli`.
-- The script runs `FLUSHALL SYNC` at the start and at the end (and `flushall` again as the first counted case). **It wipes the target database.**
-- Before every no-argument command it checks `PING`, retrying every 5 s for as long as the proxy is unreachable (there is no timeout). There is a `sleep 5` between case 01 and case 02.
-- Example:
-  ```bash
-  REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PASSWORD=secret \
-  PROXY_HOST=127.0.0.1 PROXY_PORT=6379 ./negative_testing_envoy_commands.sh
-  ```
-  `PROXY_HOST` and `PROXY_PORT` are needed for the authentication tests; see the caveats.
+Case 01 prints a counted summary and exits with code 1 above five counted failures. Authentication messages are logged separately from those counters. Case 02 exits with code 1 above six failures. If both sections stay within their thresholds, the final exit status comes from checking the final `FLUSHALL SYNC` reply for `OK`.
 
-**Pass/fail & output**:
-- A case passes when the reply *contains* the expected substring. Case 01 prints `PASS: <name>` or `FAIL: <name> - Expected '...', but got '...'`, followed by a summary of total, passed and failed tests. Case 02 prints `PASSED : ✅` or `FAILED : ⚠️` per command, then an overall PASSED/FAILED line.
-- **Exit code**: `1` if case 01 has **more than 5** failures; in that case case 02 never runs. Also `1` if case 02 has **more than 6** failures. Otherwise the exit code is that of the final `FLUSHALL SYNC ... | grep -wq OK`, i.e. `0` only if that final flush replies `OK`.
-
-**Notes / caveats**:
-- The authentication tests use `$PROXY_HOST` and `$PROXY_PORT`, which this script never defines. Export them yourself, or these three checks run against an empty host and port.
-- Cases whose expected value is `""` (GET on a missing key, GETRANGE with an inverted range, DUMP on a missing key) always pass, because an empty substring matches any reply.
-- Commands are passed unquoted (`$command`), so embedded quotes reach the server literally and `\n` is not a newline. As a result:
-  - "WATCH inside MULTI" sends one malformed command rather than a MULTI block.
-  - `EVAL "return {KEYS[1]" ...` and `SCRIPT LOAD ""` do not send the arguments they appear to send.
-  - `"PUBLISH "" ..."` ends up as `PUBLISH {negative_list}1`.
-- Case 02 really executes commands that are valid without arguments, such as `FLUSHALL`, `FLUSHDB`, `SAVE`, `BGREWRITEAOF`, `BGSAVE`, `PING`, `TIME`, `DBSIZE`, `INFO`, `LASTSAVE` and `RANDOMKEY`, if the proxy forwards them. Any of them that does not reply `invalid request` counts as a failure against the threshold of 6.
-- `start_time` is computed but never used.
+Some expectations depend on endpoint policy and reply wording. For example, the pub/sub case expects `NOPERM` and `SELECT 99` expects a cluster-mode error. Cases with an empty expected substring accept any reply.
 
 ---
 
-### `negative_testing_envoy_commands_valkey8.sh`
+## Deploy Valkey Proxy on kind
 
-**Purpose**: The same negative suite with expectations relaxed or updated for Valkey 8 backends, plus extra SCAN, BITCOUNT/BITPOS and transaction checks.
+[`build-valkey-proxy.sh`](k8s/build-valkey-proxy.sh) builds the image with Docker, loads `valkey-proxy:latest` into the default kind cluster, and applies the Kubernetes manifest. Run it from `k8s/` because the build context and manifest path are relative to the working directory.
 
-**Differences from `negative_testing_envoy_commands.sh`**:
-- The authentication tests use `REDIS_HOST`/`REDIS_PORT`, which fixes the undefined `PROXY_*` variables. A wrong password also passes if the reply contains `NOAUTH`.
-- Pub/sub: `PUBLISH \"\" {negative_list}1` now expects `NOPERM`, which assumes an ACL that blocks pub/sub. `PUBSUB INVALID_SUBCOMMAND` expects `ERR unknown subcommand`.
-- Transactions: the broken "WATCH inside MULTI" one-liner is replaced by two real heredoc transactions that are counted. Nested `MULTI` expects `MULTI calls can not be nested`; `WATCH` inside `MULTI` expects `ERR Command not allowed inside a transaction`.
-- `ECHO` with no argument and `BGSAVE` both expect `invalid request`.
-- Scripting expectations are reduced to prefixes: `ERR`, `NOSCRIPT`, `ERR`, `NOTBUSY`.
-- New counted sections (run after the stream tests):
-  - SCAN: `SCAN 0 TYPE faketype` (expects `ERR unknown type name`), `SCAN -1` and `SCAN abc` (expect `ERR invalid cursor`).
-  - BITCOUNT/BITPOS: `BITCOUNT {nonexistent}key 0 invalid` and `BITCOUNT {no}key invalid1 invalid2` (expect `ERR value is not an integer or out of range`), `BITPOS {nonexistent}key 0 0 1 hello` (expects `ERR syntax error`).
-- Case 02 (no arguments; same 176-command list):
-  - A reply passes if it matches `invalid request`, `wrong number of arguments`, `ERR` or `syntax error`.
-  - PING, FLUSHALL, FLUSHDB, TIME, RANDOMKEY and DBSIZE are reported as `SKIPPED` (the skip list also names MULTI, EXEC, DISCARD and UNWATCH, which are not in the command list). The skip is decided only *after* the command has already been sent.
-- Thresholds (≤ 5 and ≤ 6 failures), exit codes and the FLUSHALL behaviour are unchanged. The file is not marked executable, so run it with `bash negative_testing_envoy_commands_valkey8.sh`.
+Use a running kind cluster, a `kubectl` context pointing to that cluster, and an existing Valkey Cluster backend. The manifest targets `valkey-benchmark-cluster.default.svc.cluster.local:6379` by default. Update `server-ip` and `server-port` in the ConfigMap if your backend uses a different address.
 
-**Notes / caveats**:
-- The `NOPERM` expectation for PUBLISH only holds on a deployment whose ACL denies pub/sub. Because of the unquoted expansion, the channel sent is literally `""`; without such an ACL the reply is an integer and the test fails.
-- The case 02 pattern `ERR` accepts almost any error reply, so this case is much weaker than in the base script.
-- `SELECT 99` still expects the cluster-mode error.
-- The unquoted-`$command` quoting caveat and the always-passing empty expectations from the base script still apply to the `run_negative_test` cases. The new heredoc transaction checks have the same disconnected `2>/dev/null | grep -v option` line as the transaction scripts, and they write the non-hash-tagged key `key1` if the `SET` is queued.
-- FLUSHALL and FLUSHDB are still executed during case 02 even though they are reported as SKIPPED.
+```bash
+cd k8s
+./build-valkey-proxy.sh
+kubectl rollout status deployment/valkey-proxy
+kubectl port-forward service/valkey-proxy 7777:7777
+```
+
+- [`valkey-proxy.Dockerfile`](k8s/valkey-proxy.Dockerfile) clones and builds Valkey Proxy from the repository's default branch, then copies the binary into a Debian 12 runtime image.
+- [`cr/proxy.yaml`](k8s/cr/proxy.yaml) creates the proxy ConfigMap, a single-replica Deployment, and a ClusterIP Service on port `7777` in the current namespace. The Deployment mounts the config at `/opt/proxy.conf`.
+
+With the port-forward running, use `localhost:7777` for the command sanity examples from a second shell.
 
 ---
 

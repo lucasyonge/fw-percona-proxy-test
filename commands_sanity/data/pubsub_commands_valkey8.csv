@@ -1,0 +1,11 @@
+# commands|expected result|check error code?| ignored?
+unsubscribe {channel}test_pubsub_test|0|1
+punsubscribe {channel}test_pubsub_test*|0|1
+CLIENT LIST SKIPME YES|0|1
+CLIENT LIST SKIPME NO|0|1
+CLIENT KILL MAXAGE 3600|0|1
+CLIENT LIST MAXAGE 60|0|1
+pubsub numsub {channel}test_pubsub|{channel}test_pubsub\n0|0
+pubsub numpat|0|0
+PUBLISH {channel}test_pubsub Hello|0|0
+SUBSCRIBE {channel}test_pubsub|subscribe\n{channel}test_pubsub\n1|0

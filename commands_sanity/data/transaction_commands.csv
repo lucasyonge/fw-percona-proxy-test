@@ -1,0 +1,295 @@
+#command | expected reply |ignore error?
+# 1. String operations
+SET mykey 'Hello'|OK
+GET mykey|Hello
+APPEND mykey ' World'|11
+STRLEN mykey|11
+SETEX tempkey 10 'This will expire'|OK
+PSETEX tempkey2 10000 'This will expire in milliseconds'|OK
+TTL tempkey|10
+PTTL tempkey2|10000
+SETNX newkey 'This is new'|1
+MSETNX key3 'value3' key4 'value4'|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+MSETNX {key}1 'value1' {key}2 'value2' {key}3 'value3'|1
+MSET {key}1 'value1' {key}2 'value2'|OK
+MGET {key}1 {key}2 {key}3|value1\nvalue2\nvalue3\n
+SETRANGE mykey 6 'Valkey'|12
+GETRANGE mykey 0 4|Hello
+INCR counter|1
+INCRBY counter 5|6
+INCRBYFLOAT counter 1.5|7.5
+INCRBYFLOAT counter 1.5|9
+DECR counter|8
+DECRBY counter 2|6
+SETBIT mybitmap 7 1|0
+GETBIT mybitmap 7|1
+BITCOUNT mybitmap|1
+BITPOS mybitmap 1|7
+GETSET mykey 'New Value'|Hello Valkey
+GET mykey|New Value
+STRLEN mykey|9
+# 2. List operations
+LPUSH {mylist}1 item1 item2|2
+RPUSH {mylist}1 item3 item4|4
+LPUSHX {mylist}2 item5|0
+RPUSHX {mylist}2 item6|0
+LLEN {mylist}1|4
+LRANGE {mylist}1 0 -1|item2\nitem1\nitem3\nitem4\n
+LPOP {mylist}1|item2
+RPOP {mylist}1|item4
+LINDEX {mylist}1 0|item1
+LSET {mylist}1 0 'new item'|OK
+LREM {mylist}1 2 'item3'|1
+LTRIM {mylist}1 0 1|OK
+LINSERT {mylist}1 BEFORE 'new item' 'inserted item'|2
+RPOPLPUSH {mylist}1 {mylist}2|new item
+BLPOP {mylist}1 1|{mylist}1\ninserted\nitem\n
+BRPOP {mylist}2 1|{mylist}2\nnew\nitem\n
+LPUSH {mylist}1 item1 item2 item3|3
+BLPOP {mylist}1 0|{mylist}1\nitem3\n
+BRPOP {mylist}1 0|{mylist}1\nitem1\n
+BRPOPLPUSH {mylist}1 {mylist}2 0|item2
+BRPOPLPUSH {mylist}2 {mylist}1 1|item2
+# 3. Set operations
+SADD {myset}1 member1 member2 member3|3
+SCARD {myset}1|3
+SMEMBERS {myset}1|member\nmember\nmember\n
+SISMEMBER {myset}1 member1|1
+SREM {myset}1 member2|1
+SRANDMEMBER {myset}1 2|member\nmember\n
+SADD {myset}1 member4|1
+SMOVE {myset}1 {myset}2 member4|1
+SMEMBERS {myset}2|member4
+SDIFF {myset}1 {myset}2|member1\nmember3\n
+SDIFFSTORE {myset}3 {myset}1 {myset}2|2
+SINTER {myset}1 {myset}2|
+SINTERSTORE {myset}4 {myset}1 {myset}2|0
+SMEMBERS {myset}4|
+SUNION {myset}1 {myset}2|member1\nmember3\nmember4\n
+SUNIONSTORE {myset}5 {myset}1 {myset}2|3
+SMEMBERS {myset}5|member\nmember\nmember\n
+SPOP {myset}1|member\n
+# 4. Hash operations
+HSET myhash field1 'value1' field2 'value2'|2
+HSETNX myhash field3 'value3'|1
+HGET myhash field1|value1
+HMSET myhash field4 'value4' field5 'value5'|OK
+HMGET myhash field1 field2 field3|value1\nvalue2\nvalue3\n
+HGETALL myhash|field1\nvalue1\nfield2\nvalue2\nfield3\nvalue3\nfield4\nvalue4\nfield5\nvalue5\n
+HDEL myhash field2|1
+HEXISTS myhash field1|1
+HEXISTS myhash field2|0
+HKEYS myhash|field1\nfield3\nfield4\nfield5\n
+HVALS myhash|value1\nvalue3\nvalue4\nvalue5\n
+HLEN myhash|4
+HINCRBY myhash field6 5|5
+HINCRBYFLOAT myhash field7 1.5|1.5
+HSCAN myhash 0|0\nfield1\nvalue1\nfield3\nvalue3\nfield4\nvalue4\nfield5\nvalue5\nfield6\n5\nfield7\n1.5\n
+# 5. Sorted Set operations
+ZADD {myzset}1 1 'one' 2 'two' 3 'three'|3
+ZRANGE {myzset}1 0 -1 WITHSCORES|one\n1\ntwo\n2\nthree\n3\n
+ZREVRANGE {myzset}1 0 -1 WITHSCORES|three\n3\ntwo\n2\none\n1\n
+ZRANK {myzset}1 'two'|1
+ZREVRANK {myzset}1 'two'|1
+ZCOUNT {myzset}1 1 2|2
+ZINCRBY {myzset}1 1 'one'|2
+ZREM {myzset}1 'two'|1
+ZRANGEBYSCORE {myzset}1 1 3|one\nthree\n
+ZREVRANGEBYSCORE {myzset}1 3 1|three\none\n
+ZREMRANGEBYRANK {myzset}1 0 0|1
+ZREMRANGEBYSCORE {myzset}1 1 2|0
+ZCARD {myzset}1|1
+ZSCORE {myzset}1 'three'|3
+ZUNIONSTORE {myzset}union 2 {myzset}1 {myzset}2|1
+ZINTERSTORE {myzset}inter 2 {myzset}1 {myzset}2|0
+ZSCAN {myzset}1 0|0\nthree\n3\n
+ZRANGEBYLEX {myzset}1 - +|three
+ZLEXCOUNT {myzset}1 - +|1
+ZREMRANGEBYLEX {myzset}1 - +|1
+# 6. HyperLogLog operations
+PFADD {myhll}1 a b c d|1
+PFCOUNT {myhll}1|4
+PFADD {myhll}2 c d e f|1
+PFMERGE {myhll}3 {myhll}1 {myhll}2|OK
+PFCOUNT {myhll}3|6
+# 7. Geo operations
+GEOADD locations 13.361389 38.115556 'Palermo' 15.087269 37.502669 'Catania'|2
+GEODIST locations 'Palermo' 'Catania'|166274.1516
+GEOHASH locations 'Palermo'|sqc8b49rny0
+GEOPOS locations 'Palermo'|13.36138933897018433\n38.11555639549629859\n
+GEORADIUS locations 15 37 100 km|Catania
+GEORADIUSBYMEMBER locations 'Palermo' 200 km|Palermo\nCatania\n
+# 8. Stream operations
+XADD mystream * name 'abcd' age '20'|0
+XLEN mystream|1
+XRANGE mystream - +|name\nabcd\nage\n
+XREVRANGE mystream + - COUNT 1|name\nabcd\nage\n
+XPENDING mystream mygroup - + 10|NOGROUP No such key 'mystream' or consumer group 'mygroup'
+XGROUP CREATE mystream mygroup $|OK
+XPENDING mystream mygroup - + 10|
+XREAD COUNT 1 STREAMS mystream 0-0|mystream\nname\nabcd\nage\n
+XREADGROUP GROUP mygroup consumer COUNT 1 STREAMS mystream >|
+XREADGROUP GROUP mygroup consumer COUNT 1 STREAMS mystream 0|mystream
+XACK mystream mygroup 0|0
+XPENDING mystream mygroup - + 10|
+XADD mystream * name 'efgh' age '30'|0
+XINFO STREAM mystream|length\nradix-tree-keys\nradix-tree-nodes\nlast-generated-id\nmax-deleted-entry-id\nentries-added\nrecorded-first-entry-id\ngroups\nfirst-entry\nname\nabcd\nage\nlast-entry\nname\nefgh\nage\n
+XINFO GROUPS mystream|name\nmygroup\nconsumers\npending\nlast-delivered-id\nentries-read\nlag\n
+XTRIM mystream MAXLEN 1000|0
+XGROUP DESTROY mystream mygroup|1
+XGROUP DESTROY mystream mygroup|0
+XADD mystream 2345678904567 hello world|0
+XDEL mystream 2345678904567-0|1
+XDEL mystream 2345678904567-0|0
+# 9. Transaction operations
+MULTI|
+SET transaction_key 'value'|OK
+GET transaction_key|value
+EXEC|\nERR\nEXEC\nwithout\nMULTI\n
+DISCARD|ERR EXEC without MULTI
+WATCH transaction_key|
+UNWATCH|OK|1
+# 10. Scripting
+EVAL 'return {KEYS[1],ARGV[1]}' 1 mykey 'Hello'|mykey\nHello\n
+SCRIPT LOAD \"server.call('SET', KEYS[1], ARGV[1]); return server.call('GET', KEYS[1])\"|'SCRIPT'\ncommand\nis\nnot\nsupported\nwithin\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors\n|1
+EVALSHA 'f7e0c9bbf13a8a4f79c0de158c2f1b1e7e8535e1' 1 mykey|NOSCRIPT No matching script. Please use EVAL.
+EVALSHA '18d788194860a281b19910d462b1e96dabf3c984' 1 mykey hello|hello
+SCRIPT EXISTS f7e0c9bbf13a8a4f79c0de158c2f1b1e7e8535e1|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+SCRIPT FLUSH|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+# 11. Connection and server operations
+PING|PONG|1
+ECHO 'Hello World'|Hello World|1
+TIME||1
+CLIENT LIST||1
+CLIENT GETNAME||1
+CLIENT SETNAME myclient||1
+CLIENT GETNAME|myclient|1
+SLOWLOG GET 1|'SLOWLOG'\ncommand\nis\nnot\nsupported\nwithin\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors\n|1
+INFO|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n|1
+# 12. Key space operations
+RANDOMKEY|'RANDOMKEY'\ncommand\nis\nnot\nsupported\nwithin\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors\n|1
+SCAN 0|'SCAN'\ncommand\nis\nnot\nsupported\nwithin\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors\n|1
+SET {mykey}1 myvalue|OK
+TYPE {mykey}1|string
+EXISTS {mykey}1|1
+DEL {mykey}1|1
+UNLINK {mykey}1|0
+SET {mykey}1 myvalue|OK
+UNLINK {mykey}1|1
+SET {mykey}1 myvalue|OK
+EXPIRE {mykey}1 100|1
+PERSIST {mykey}1|1
+TTL {mykey}1|-1
+MOVE {mykey}1 1||1
+SET {mykey}1 myvalue|OK
+RENAME {mykey}1 {mykey}3|OK
+GET {mykey}3|myvalue
+RENAMENX {mykey}3 {mykey}4|1
+GET {mykey}4|myvalue
+SORT {mylist}1 alpha|item2
+KEYS *|'KEYS'\ncommand\nis\nnot\nsupported\nwithin\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors\n|1
+# 13. Pub/Sub operations
+PUBLISH mychannel 'Hello'|0
+PUBSUB CHANNELS|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+# "SUBSCRIBE mychannel
+UNSUBSCRIBE mychannel|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+# "PSUBSCRIBE mychannel*
+PUNSUBSCRIBE mychannel*|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+# 14. Database operations
+SELECT 1|DB index is out of range|1
+FLUSHDB|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+SELECT 0|OK|1
+FLUSHALL|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+DBSIZE|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+SWAPDB 0 1|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n|1
+# 15. Cluster operations
+CLUSTER INFO|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+CLUSTER NODES|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+CLUSTER SLOTS|ERR\nCommand\nnot\nallowed\ninside\na\ntransaction\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+# 16. Module operations
+MODULE LIST|(nil)|1
+MODULE LOAD /path/to/mymodule.so||1
+MODULE UNLOAD mymodule||1
+# 17. Blocking commands
+del {mylist}1 {mylist}2|1
+del {myzset}1 {myzset}2|0
+lpush {mylist}1 1 3 5 7 9|5
+rpush {mylist}2 2 4 6 8 10|5
+BLPOP {mylist}1 1000|{mylist}1\n9\n
+BRPOP {mylist}2 1000|{mylist}2\n10\n
+BRPOPLPUSH {mylist}1 {mylist}2 100|1
+ZADD {myzset}1 1 one 3 three 5 five 7 seven 9 nine|5
+ZADD {myzset}2 2 two 4 four 6 six 8 eight 10 ten|5
+BZPOPMIN {myzset}1 1000|{myzset}1\none\n1\n
+BZPOPMAX {myzset}2 1000|{myzset}2\nten\n10\n
+BLPOP {mylist}1 0|{mylist}1\n7\n
+BRPOP {mylist}2 0|{mylist}2\n8\n
+BRPOPLPUSH {mylist}1 {mylist}2 0|3
+BZPOPMIN {myzset}1 0|{myzset}1\nthree\n3\n
+BZPOPMAX {myzset}2 0|{myzset}2\neight\n8\n
+BLMOVE {mylist}2 {mylist}1 LEFT LEFT 1000|3
+BLMOVE {mylist}2 {mylist}1 LEFT RIGHT 1000|1
+BLMOVE {mylist}2 {mylist}1 RIGHT LEFT 1000|6
+BLMOVE {mylist}2 {mylist}1 RIGHT RIGHT 1000|4
+LRANGE {mylist}1 0 -1|6\n3\n5\n1\n4\n
+LRANGE {mylist}2 0 -1|2
+BLMOVE {mylist}1 {mylist}2 LEFT LEFT 0|6
+BLMOVE {mylist}1 {mylist}2 LEFT RIGHT 0|3
+BLMOVE {mylist}1 {mylist}2 RIGHT LEFT 0|4
+BLMOVE {mylist}1 {mylist}2 RIGHT RIGHT 0|1
+LRANGE {mylist}1 0 -1|5
+LRANGE {mylist}2 0 -1|4\n6\n2\n3\n1\n
+# XREAD
+XREAD BLOCK 100 STREAMS mystream 0|mystream\nname\nabcd\nage\nname\nefgh\nage\n
+XREAD BLOCK 100 STREAMS mystream $|
+XREAD STREAMS mystream 0 BLOCK 100|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD 0 STREAMS mystream 0 BLOCK 100|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD STREAMS mystream 0 BLOCK 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD STREAMS BLOCK 100 mystream 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD STREAMS BLOCK 0 mystream 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD STREAMS mystream 0 BLOCK 100 count 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD count 1 BLOCK 100 STREAMS mystream 0|mystream\nname\nabcd\nage\n
+XREAD count 1 BLOCK 0 STREAMS mystream 0|mystream\nname\nabcd\nage\n
+XREAD STREAMS BLOCK 100 count 0 mystream 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD STREAMS BLOCK 0 count 0 mystream 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD STREAMS mystream 0 BLOCK 100 count -1|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD STREAMS mystream 0 BLOCK 0 count -1|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD count -1 BLOCK 100 STREAMS mystream 0|mystream\nname\nabcd\nage\nname\nefgh\nage\n
+XREAD count -1 BLOCK 100 0 STREAMS mystream 0|ERR syntax error
+XREAD count -1 BLOCK 0 STREAMS mystream 0|mystream\nname\nabcd\nage\nname\nefgh\nage\n
+XREAD STREAMS BLOCK 100 count -1 mystream 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREAD STREAMS BLOCK 0 count -1 mystream 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XGROUP CREATE mystream mygroup $|OK
+XREADGROUP GROUP mygroup consumer COUNT 10 BLOCK 10000 STREAMS mystream 0|mystream
+XADD mystream * field1 value1|1
+XREADGROUP GROUP mygroup consumer COUNT 10 BLOCK 10000 STREAMS mystream 0|mystream
+XREADGROUP GROUP mygroup consumer COUNT 10 BLOCK 10000 STREAMS mystream >|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup consumer COUNT 10 BLOCK 10000 STREAMS mystream 0|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup consumer COUNT 10 BLOCK 0 STREAMS mystream 0|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup consumer COUNT 10 BLOCK 0 STREAMS mystream >|
+XREADGROUP GROUP mygroup consumer COUNT 10 BLOCK 0 STREAMS mystream 0|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup consumer COUNT 10 BLOCK 0 STREAMS mystream 0|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup consumer BLOCK 0 COUNT 10 STREAMS mystream 0|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup BLOCK 0 consumer COUNT 10 STREAMS mystream 0|ERR syntax error
+XREADGROUP BLOCK 0 GROUP mygroup consumer COUNT 10 STREAMS mystream 0|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup COUNT 10 consumer BLOCK 0 STREAMS mystream 0|ERR syntax error
+XREADGROUP GROUP mygroup consumer BLOCK 0 COUNT 10 STREAMS mystream 0|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup BLOCK 0 consumer COUNT 10 STREAMS mystream 0|ERR syntax error
+XREADGROUP COUNT 10 BLOCK 0 GROUP mygroup consumer STREAMS mystream 0|mystream\nfield1\nvalue1\n
+XREADGROUP GROUP mygroup COUNT 10 STREAMS mystream 0 BLOCK 0 consumer|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREADGROUP GROUP mygroup STREAMS mystream consumer 0 COUNT 10 BLOCK 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREADGROUP GROUP mygroup consumer STREAMS mystream 0 COUNT 10 BLOCK 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREADGROUP consumer STREAMS mystream 0 GROUP mygroup COUNT 10 BLOCK 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREADGROUP GROUP mygroup consumer COUNT 10 STREAMS mystream 0 BLOCK 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREADGROUP GROUP mygroup consumer STREAMS mystream 0 COUNT 10 BLOCK 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREADGROUP GROUP mygroup STREAMS mystream 0 consumer COUNT 10 BLOCK 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+XREADGROUP STREAMS mystream 0 GROUP mygroup consumer COUNT 10 BLOCK 0|CROSSSLOT\nKeys\nin\nrequest\ndon't\nhash\nto\nthe\nsame\nslot\n\nEXECABORT\nTransaction\ndiscarded\nbecause\nof\nprevious\nerrors.\n
+del mystream|1
+# 18. Copy command validation
+DEL {key}1 {key}2|2
+MSET {key}1 value1 {key}2 value2|OK
+MGET {key}1 {key}2|value1\nvalue2\n
+COPY {key}1 {key}2|0
+MGET {key}1 {key}2|value1\nvalue2\n
+COPY {key}1 {key}2 REPLACE|1
+MGET {key}1 {key}2|value1\nvalue1\n

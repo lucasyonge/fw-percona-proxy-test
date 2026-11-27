@@ -1,0 +1,6 @@
+# Commands (\n separates client input lines)|Expected reply substring|Pass message|Mismatch level|Mismatch message
+MULTI\nMULTI\nSET key1 value1\nEXEC|MULTI calls can not be nested|Nested MULTI correctly rejected in Valkey 8|FAILED|Nested MULTI should be rejected in Valkey 8
+MULTI\nWATCH key1\nSET key1 value1\nEXEC|ERR Command not allowed inside a transaction|WATCH inside MULTI correctly rejected in Valkey 8|FAILED|WATCH inside MULTI should be rejected in Valkey 8
+DEL {trans}version\nMULTI\nSET {trans}version "v1"\nSET {trans}version "v2" IFEQ "v1"\nGET {trans}version\nEXEC|v2|SET IFEQ works correctly in transaction|FAILED|SET IFEQ did not work as expected in transaction
+MULTI\nBITCOUNT {trans}nonexistent 0 invalid\nEXEC|ERR value is not an integer or out of range|BITCOUNT returns error for invalid arguments in Valkey 8|INFO|BITCOUNT error behavior verified
+MULTI\nBITPOS {trans}nonexistent 0 0 1 hello\nEXEC|ERR syntax error|BITPOS returns error for invalid arguments in Valkey 8|INFO|BITPOS error behavior verified
